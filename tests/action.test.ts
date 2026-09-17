@@ -289,13 +289,24 @@ function runValidate(overrides: Record<string, string> = {}) {
  * Returns the argument vector npm was handed and the lines the step appended
  * to GITHUB_PATH.
  */
-function runInstall(overrides: Record<string, string> = {}): { argv: string[]; githubPath: string } {
+function runInstall(
+  overrides: Record<string, string> = {},
+): { argv: string[]; githubPath: string; prefix: string } {
   const dir = tempDir();
   const bin = path.join(dir, 'bin');
   mkdirSync(bin, { recursive: true });
   const record = path.join(dir, 'npm-argv.txt');
   const shim = path.join(bin, 'npm');
-  writeFileSync(shim, `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg" >> ${JSON.stringify(record)}; done\n`);
+  // The shim also creates `<prefix>/lib` on an install, because a real global
+  // install does and the step writes a manifest there and verifies from
+  // inside it. A stub that only recorded argv would abort the step on a
+  // missing directory, which would be the harness failing rather than the
+  // action -- and would hide whether the verification happens at all.
+  writeFileSync(
+    shim,
+    `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg" >> ${JSON.stringify(record)}; done\n` +
+      'case "$1" in install) mkdir -p "${npm_config_prefix}/lib" ;; esac\n',
+  );
   chmodSync(shim, 0o755);
 
   const prefix = path.join(dir, 'prefix');
@@ -317,8 +328,69 @@ function runInstall(overrides: Record<string, string> = {}): { argv: string[]; g
   return {
     argv: readFileSync(record, 'utf8').split('\n').filter((line) => line.length > 0),
     githubPath: readFileSync(githubPath, 'utf8'),
+    prefix,
   };
 }
+
+describe('action.yml installs the gates without trusting them first', () => {
+  it('never lets an installed package run its own install scripts', () => {
+    // This step runs on a runner holding the job's token, and the four things
+    // it installs are CONTROL INPUTS: they decide whether a pull request is
+    // allowed to merge. Without `--ignore-scripts` every package in the
+    // resolved tree gets arbitrary code execution here on every run.
+    //
+    // Verified against the real registry rather than assumed to transfer from
+    // vault-guard: all four gates install and report their versions correctly
+    // with the flag set.
+    expect(runInstall().argv).toContain('--ignore-scripts');
+  });
+
+  it('declares all four gates in a manifest, or the audit skips every one of them', () => {
+    // `npm audit signatures` audits the tree's EDGES OUT, and a global install
+    // leaves `<prefix>/lib` with a `node_modules` and no manifest, so the root
+    // declares nothing and the four packages just installed sit on the far end
+    // of no edge. Their dependencies get audited; the gates themselves do not.
+    //
+    // Measured on the real four-package tree: 32 signatures and 8 attestations
+    // without this file, 36 and 12 with it. The four missing ones are exactly
+    // the four gates. This bug shipped once in vault-guard's single-package
+    // version of the same step and was caught in review.
+    const run = runInstall();
+    const manifest = JSON.parse(
+      readFileSync(path.join(run.prefix, 'lib', 'package.json'), 'utf8'),
+    ) as { dependencies: Record<string, string> };
+
+    expect(Object.keys(manifest.dependencies).sort()).toEqual([
+      '@vaultcompass/conductor',
+      '@vaultcompass/dep-guard',
+      '@vaultcompass/intent-guard',
+      '@vaultcompass/vault-guard',
+    ]);
+    // The versions have to be the ones being installed, or the audit checks
+    // four different packages than the four that landed.
+    expect(manifest.dependencies['@vaultcompass/vault-guard']).toBe('1.7.0');
+    expect(manifest.dependencies['@vaultcompass/intent-guard']).toBe('1.4.0');
+  });
+
+  it('carries a version override into the manifest as well as the install', () => {
+    // The two must not drift: an override that reached the install but not the
+    // manifest would audit a version nobody installed and pass.
+    const run = runInstall({ VAULT_GUARD_VERSION: '1.7.0' });
+    const manifest = JSON.parse(
+      readFileSync(path.join(run.prefix, 'lib', 'package.json'), 'utf8'),
+    ) as { dependencies: Record<string, string> };
+    expect(manifest.dependencies['@vaultcompass/vault-guard']).toBe('1.7.0');
+  });
+
+  it('verifies what the registry serves for every name and version it installed', () => {
+    // Deliberately not "verifies what it installed": the command refetches
+    // manifests from the registry and hashes nothing on disk, so a tampered
+    // install passes it. Bounded, and the action comments say so.
+    const argv = runInstall().argv;
+    expect(argv).toContain('audit');
+    expect(argv).toContain('signatures');
+  });
+});
 
 describe('action.yml installs the gates outside the tree', () => {
   it('pins all four packages to an exact version by default', () => {
@@ -364,13 +436,19 @@ describe('action.yml installs the gates outside the tree', () => {
   it('asks npm for exactly the four packages at exactly the input versions', () => {
     const { argv } = runInstall();
 
+    // Every argument npm is given across the whole step, in order. The
+    // verification call is part of it: asserting only the install would let a
+    // second npm invocation be added, or removed, without anything noticing.
     expect(argv).toEqual([
       'install',
       '-g',
+      '--ignore-scripts',
       '@vaultcompass/conductor@0.4.0',
       '@vaultcompass/dep-guard@0.6.0',
       '@vaultcompass/vault-guard@1.7.0',
       '@vaultcompass/intent-guard@1.4.0',
+      'audit',
+      'signatures',
     ]);
   });
 

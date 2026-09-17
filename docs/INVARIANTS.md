@@ -423,6 +423,51 @@ is to repair or delete it by hand. Nothing pinned it, because every test
 that touched the manifest wrote valid JSON back. Now pinned by
 tests/init.test.ts:926.
 
+## The gates are installed without scripts, and verified before they are trusted
+
+The four packages this action installs are CONTROL INPUTS: they decide whether a
+pull request may merge. Two properties follow, and both are properties of the
+install step rather than of any gate.
+
+`--ignore-scripts`, because the step runs on a runner holding the job's token.
+Without it every package in the resolved tree gets arbitrary code execution
+there on every run, which is a strange amount of trust to extend from the tools
+whose job is deciding whether this repository can be trusted. Checked against
+the real registry rather than assumed to carry over from one gate: all four
+install and report their own versions correctly with the flag set.
+
+A ROOT MANIFEST, and it is load-bearing rather than tidiness. `npm audit
+signatures` audits the tree's EDGES OUT, and a global install leaves
+`<prefix>/lib` with a `node_modules` and no manifest, so the root declares
+nothing and the four packages just installed sit on the far end of no edge.
+Without it the audit covers their dependencies and SKIPS ALL FOUR GATES.
+Measured on this exact tree: 32 signatures and 8 attestations without the file,
+36 and 12 with it, and the four missing ones are the gates. The single-package
+version of this step shipped in vault-guard without the manifest and recorded
+the short count as evidence that it worked.
+
+WHAT THE VERIFICATION PROVES, narrowly, because the obvious summary is wrong. It
+asks the registry for each name and version in the tree and checks the signature
+served back. It does NOT read the installed files, so a tampered install is
+invisible to it. It does NOT defeat a compromised registry, which signs what it
+serves. And a MISSING attestation is not a failure, only a missing or invalid
+signature is, so it does not require provenance despite all four packages
+publishing it. What remains is that every name and version in the tree, gates
+included, has to be one npmjs currently serves with a valid signature.
+
+KNOWN CONSEQUENCE OF FAILING CLOSED: a runner pointed at a mirror or proxy that
+does not serve `/-/npm/v1/keys`, or a sigstore outage, installs fine and then
+fails this step with `EMISSINGSIGNATUREKEY`. Documented in the README rather
+than left to be discovered from a red required check.
+
+**Enforced by:** `tests/action.test.ts`, which runs the real install script
+against a stubbed npm and asserts the full argv in order (so a second npm
+invocation cannot be added or removed unnoticed), that the manifest names all
+four packages, and that a version override reaches the manifest as well as the
+install. The two must not drift, or the audit would check a version nobody
+installed and pass. The stub is npm, so these prove the action ASKS; the counts
+above are what a real npm does.
+
 ## The pull-request trust boundary: the rules come from the base ref
 
 New in 0.3.0. Every gate reads its own rules out of the repository it is

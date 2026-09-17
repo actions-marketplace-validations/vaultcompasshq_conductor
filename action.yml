@@ -177,11 +177,67 @@ runs:
       run: |
         set -eu
         mkdir -p "$npm_config_prefix"
-        npm install -g \
+
+        # `--ignore-scripts`, because this step runs on a runner holding the
+        # job's token and the four things it installs are CONTROL INPUTS: they
+        # decide whether a pull request is allowed to merge. Without the flag,
+        # every package in the resolved tree gets arbitrary code execution
+        # here, on every run, which is a strange amount of trust to extend
+        # from the tools whose job is deciding whether this repository can be
+        # trusted.
+        #
+        # Checked against the real registry rather than assumed to carry over
+        # from any one gate: all four install and report their own versions
+        # correctly with the flag set.
+        npm install -g --ignore-scripts \
           "@vaultcompass/conductor@$CONDUCTOR_VERSION" \
           "@vaultcompass/dep-guard@$DEP_GUARD_VERSION" \
           "@vaultcompass/vault-guard@$VAULT_GUARD_VERSION" \
           "@vaultcompass/intent-guard@$INTENT_GUARD_VERSION"
+
+        # A ROOT MANIFEST, WITHOUT WHICH THE NEXT COMMAND SKIPS ALL FOUR GATES.
+        #
+        # `npm audit signatures` audits the tree's EDGES OUT: it loads the
+        # local prefix and walks what the root declares as dependencies. A
+        # global install leaves `<prefix>/lib` holding a `node_modules` and NO
+        # manifest, so the root declares nothing and the four packages just
+        # installed are on the far end of no edge. Their transitive
+        # dependencies are, so those get audited and the gates do not.
+        #
+        # Measured on this exact four-package tree: 32 signatures and 8
+        # attestations without this file, 36 and 12 with it. The four missing
+        # ones are the four gates. The single-package version of this step
+        # shipped in vault-guard without the manifest and recorded the short
+        # count as evidence that it worked.
+        printf '{"name":"conductor-action-verify","private":true,"dependencies":{"@vaultcompass/conductor":"%s","@vaultcompass/dep-guard":"%s","@vaultcompass/vault-guard":"%s","@vaultcompass/intent-guard":"%s"}}\n' \
+          "$CONDUCTOR_VERSION" "$DEP_GUARD_VERSION" "$VAULT_GUARD_VERSION" "$INTENT_GUARD_VERSION" \
+          > "$npm_config_prefix/lib/package.json"
+
+        # WHAT THIS COMMAND PROVES, narrowly, because the tempting summary is
+        # false. It asks the registry for each name and version in the tree and
+        # checks the registry signature served back.
+        #
+        # It does NOT read the installed files: the manifest is refetched
+        # rather than anything on disk being hashed, so a tampered install is
+        # invisible to it. It does NOT defeat a compromised registry, which
+        # signs what it serves. And a MISSING attestation is not a failure,
+        # only a missing or invalid signature is, so it does not require
+        # provenance despite all four packages publishing it.
+        #
+        # What remains is worth having: every name and version in the tree, the
+        # four gates included, has to be one npmjs currently serves with a
+        # valid registry signature.
+        #
+        # Fails closed under `set -eu`, deliberately. KNOWN CONSEQUENCE: a
+        # consumer whose runner points npm at a mirror or proxy that does not
+        # serve `/-/npm/v1/keys` installs fine and then fails here with
+        # EMISSINGSIGNATUREKEY, and a sigstore or TUF outage does the same to
+        # everyone at once. Documented in the README rather than left to be
+        # discovered from a red required check.
+        # In a subshell, because a line follows this one and it must not
+        # inherit the verification directory as its cwd. A failing subshell
+        # still trips `set -e`, so this stays a gate rather than a note.
+        ( cd "$npm_config_prefix/lib" && npm audit signatures )
         # On PATH for the steps after this one rather than called by an
         # absolute path. The umbrella resolves each gate by NAME, so the gates
         # have to be findable the same way the umbrella is.

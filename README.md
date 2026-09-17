@@ -540,11 +540,32 @@ defaulting to the version this release pins. A validate step refuses anything
 that is not an exact version, a range and `latest` included: the version that
 judges a pull request has to be a decision taken on the base branch rather
 than one the registry takes on the morning of the run. An install step then
-runs `npm install -g` under the runner temp, never into the workspace, and
-prepends that bin directory to `PATH`, so the run step invokes `conductor` off
-`PATH` and each gate resolves by name the same way. The install is
-**unconditional**, on push and `pull_request` alike, so there is one code path
-rather than one that matters and one that nobody exercises.
+runs `npm install -g --ignore-scripts` under the runner temp, never into the
+workspace, and prepends that bin directory to `PATH`, so the run step invokes
+`conductor` off `PATH` and each gate resolves by name the same way. The install
+is **unconditional**, on push and `pull_request` alike, so there is one code
+path rather than one that matters and one that nobody exercises.
+
+`--ignore-scripts` is there because the step holds the job's token and the four
+things it installs decide whether a pull request may merge; without it every
+package in the resolved tree would run code on the runner. The step then runs
+`npm audit signatures` over what it installed.
+
+**What that verification proves, and what it does not.** It asks the registry
+for each name and version in the tree, the four gates included, and checks the
+signature served back, so an unpublished, replaced or unsigned package fails the
+step. It does **not** read the installed files, so it will not detect a tampered
+install; it does **not** defeat a compromised registry, which signs what it
+serves; and a **missing** attestation is not a failure, so it does not require
+provenance even though all four packages publish it.
+
+> **This step needs a registry that serves `/-/npm/v1/keys`.** If your runner
+> points npm at a mirror or proxy that does not (via `actions/setup-node`'s
+> `registry-url:`, a corporate `~/.npmrc`, or `npm_config_registry`), the
+> install succeeds and this step then fails with `EMISSINGSIGNATUREKEY`. A
+> sigstore outage has the same effect. It fails closed on purpose, so that is a
+> red gate rather than a skipped check; pin to `@v0.4.0`, which does not
+> verify, if it blocks you.
 
 `--base` is passed only when the `base-ref` input names one; left empty, the
 umbrella reads `GITHUB_BASE_REF` itself and treats an empty value as "not a
