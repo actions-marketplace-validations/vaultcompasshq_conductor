@@ -464,8 +464,15 @@ than left to be discovered from a red required check.
 against a stubbed npm and asserts the full argv in order (so a second npm
 invocation cannot be added or removed unnoticed), that the manifest names all
 four packages, and that a version override reaches the manifest as well as the
-install. The two must not drift, or the audit would check a version nobody
-installed and pass. The stub is npm, so these prove the action ASKS; the counts
+install.
+
+A precision that matters, because the obvious reading is wrong: the audit
+resolves each edge BY NAME and audits the version on disk. A manifest declaring
+a wrong or nonexistent version still audits the installed one and exits 0, and a
+manifest naming a package that is not installed is skipped silently, also
+exiting 0. So the NAMES are what make the check cover the gates; the version
+assertions keep the file from drifting away from the install, and are not
+themselves a security property. The stub is npm, so these prove the action ASKS; the counts
 above are what a real npm does.
 
 ## The pull-request trust boundary: the rules come from the base ref

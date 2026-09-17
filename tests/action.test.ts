@@ -291,7 +291,8 @@ function runValidate(overrides: Record<string, string> = {}) {
  */
 function runInstall(
   overrides: Record<string, string> = {},
-): { argv: string[]; githubPath: string; prefix: string } {
+  npmVersion = '10.9.2',
+): { argv: string[]; githubPath: string; prefix: string; status: number; stderr: string } {
   const dir = tempDir();
   const bin = path.join(dir, 'bin');
   mkdirSync(bin, { recursive: true });
@@ -305,7 +306,13 @@ function runInstall(
   writeFileSync(
     shim,
     `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg" >> ${JSON.stringify(record)}; done\n` +
-      'case "$1" in install) mkdir -p "${npm_config_prefix}/lib" ;; esac\n',
+      // A real npm answers `--version` with a version, and the step now reads
+      // it: below 10.6.0 the signature verification calls a clean install
+      // tampered with. A stub that printed nothing would make the step refuse,
+      // which is correct behaviour against a client it cannot identify but
+      // says nothing about the action.
+      `case "$1" in --version) printf '%s\\n' "${npmVersion}" ;; ` +
+      'install) mkdir -p "${npm_config_prefix}/lib" ;; esac\n',
   );
   chmodSync(shim, 0o755);
 
@@ -323,9 +330,12 @@ function runInstall(
       ...defaultVersionEnv(overrides),
     },
   });
-  expect(result.status).toBe(0);
 
   return {
+    status: result.status ?? -1,
+    // GitHub reads `::error::` annotations from STDOUT, so that is where the
+    // step writes them and where a test has to look.
+    stderr: `${result.stdout ?? ''}${result.stderr ?? ''}`,
     argv: readFileSync(record, 'utf8').split('\n').filter((line) => line.length > 0),
     githubPath: readFileSync(githubPath, 'utf8'),
     prefix,
@@ -333,6 +343,45 @@ function runInstall(
 }
 
 describe('action.yml installs the gates without trusting them first', () => {
+  it('refuses an npm too old to verify signatures, naming the real cause', () => {
+    // `npm audit signatures` is not version-stable. Below 10.6.0 it fails on a
+    // CLEAN install of these very packages, because the client's bundled keys
+    // and TUF root are stale. On 10.5.0 it says "Someone might have tampered
+    // with these packages", naming our own; on 10.2.4 it is
+    // EEXPIREDSIGNATUREKEY. Both are false and both are alarming.
+    //
+    // Bisected against a real install of the four gates: 8.19.4, 9.9.4, 10.2.4
+    // and 10.5.0 fail; 10.6.0 and later pass. That maps to Node 18.19.x and
+    // 20.10 through 20.13, which setup-node will hand a consumer today. This
+    // action does not install Node itself -- the documented workflow has the
+    // caller do it -- so the floor is enforced rather than assumed.
+    for (const old of ['8.19.4', '9.9.4', '10.2.4', '10.5.0']) {
+      const run = runInstall({}, old);
+      expect([old, run.status]).not.toEqual([old, 0]);
+      expect(run.stderr).toContain(old);
+      expect(run.stderr).toContain('10.6.0 or newer');
+      // It must never reach the install with a client that cannot verify.
+      expect(run.argv).not.toContain('install');
+    }
+  });
+
+  it('accepts the first npm that actually verifies, and newer', () => {
+    // The floor must not be too high either: 10.6.0 is the first version
+    // measured to pass, so refusing it would break consumers for nothing.
+    for (const ok of ['10.6.0', '10.9.2', '11.0.0']) {
+      expect([ok, runInstall({}, ok).status]).toEqual([ok, 0]);
+    }
+  });
+
+  it('refuses rather than assumes when it cannot read a version at all', () => {
+    // A guard that fails open when it cannot see is not a guard. An earlier
+    // draft compared the raw string: an unexpected answer made the comparison
+    // error, the `if` read false, and every client passed the floor.
+    const run = runInstall({}, '');
+    expect(run.status).not.toBe(0);
+    expect(run.argv).not.toContain('install');
+  });
+
   it('never lets an installed package run its own install scripts', () => {
     // This step runs on a runner holding the job's token, and the four things
     // it installs are CONTROL INPUTS: they decide whether a pull request is
@@ -366,15 +415,23 @@ describe('action.yml installs the gates without trusting them first', () => {
       '@vaultcompass/intent-guard',
       '@vaultcompass/vault-guard',
     ]);
-    // The versions have to be the ones being installed, or the audit checks
-    // four different packages than the four that landed.
+    // The NAMES are what matter to the audit: it resolves each edge by name
+    // and audits the version that is on disk. A manifest declaring a wrong or
+    // even nonexistent version still audits the installed one and exits 0,
+    // measured. So these version assertions pin the file against DRIFT from
+    // the install; they are not what makes the check cover the right thing.
+    // Naming a package that is not installed is the quiet case: the audit
+    // skips it and still exits 0.
     expect(manifest.dependencies['@vaultcompass/vault-guard']).toBe('1.7.0');
     expect(manifest.dependencies['@vaultcompass/intent-guard']).toBe('1.4.0');
+    expect(manifest.dependencies['@vaultcompass/conductor']).toBe('0.4.0');
+    expect(manifest.dependencies['@vaultcompass/dep-guard']).toBe('0.6.0');
   });
 
   it('carries a version override into the manifest as well as the install', () => {
-    // The two must not drift: an override that reached the install but not the
-    // manifest would audit a version nobody installed and pass.
+    // Keeps the manifest honest about what was installed. Not a security
+    // property: see above, the audit reads the name and takes the version off
+    // disk.
     const run = runInstall({ VAULT_GUARD_VERSION: '1.7.0' });
     const manifest = JSON.parse(
       readFileSync(path.join(run.prefix, 'lib', 'package.json'), 'utf8'),
@@ -440,6 +497,10 @@ describe('action.yml installs the gates outside the tree', () => {
     // verification call is part of it: asserting only the install would let a
     // second npm invocation be added, or removed, without anything noticing.
     expect(argv).toEqual([
+      // The client-version preflight. Below npm 10.6.0 the verification at the
+      // end of this step calls a clean install tampered with, so the step
+      // refuses up front and says which npm it found.
+      '--version',
       'install',
       '-g',
       '--ignore-scripts',
