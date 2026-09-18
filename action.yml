@@ -206,14 +206,31 @@ runs:
         # the documented workflow has the caller do that -- so the client here
         # is whatever the consumer set up, and the floor has to be enforced
         # rather than assumed.
-        # Parsed strictly, and an unreadable answer is a refusal rather than a
-        # pass. An earlier draft compared the string straight out of `npm
-        # --version`: when that produced something unexpected the comparison
-        # errored, the `if` read false, and the floor silently let everything
-        # through. A guard that fails open when it cannot see is not a guard.
-        NPM_VERSION="$(npm --version)"
-        if ! printf '%s' "$NPM_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; then
-          printf '::error::conductor: could not read an npm version to check (got %q). Refusing rather than assuming the client can verify signatures.\n' "$NPM_VERSION"
+        # EXTRACTED, not validated-then-split, and this distinction has already
+        # cost two attempts.
+        #
+        # The first draft compared the raw string from `npm --version`: an
+        # unexpected answer made the comparison error, the `if` read false, and
+        # the floor let everything through. The second added
+        # `grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'` -- but grep matches PER LINE
+        # while the arithmetic below reads the WHOLE string, so a client that
+        # printed an upgrade notice above its version passed the shape check
+        # and then failed the comparison exactly as before:
+        #
+        #   [: npm notice a new version is available
+        #   10: integer expected
+        #
+        # and the floor was skipped again. Twice, in a guard whose entire
+        # reason for existing is that failing open was the bug.
+        #
+        # So: pull the first version-shaped token out of the output and work
+        # only with that. A line of notice above the version is handled; an
+        # output with no version in it at all yields the empty string and is
+        # refused below. `|| true` because grep exits 1 on no match and this
+        # runs under `set -e`.
+        NPM_VERSION="$(npm --version 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
+        if [ -z "$NPM_VERSION" ]; then
+          printf '::error::conductor: could not read an npm version to check. Refusing rather than assuming the client can verify signatures.\n'
           exit 1
         fi
         NPM_MAJOR="${NPM_VERSION%%.*}"
@@ -221,7 +238,7 @@ runs:
         NPM_MINOR="${NPM_REST%%.*}"
         if [ "$NPM_MAJOR" -lt 10 ] || { [ "$NPM_MAJOR" -eq 10 ] && [ "$NPM_MINOR" -lt 6 ]; }; then
           printf '::error::conductor: npm %s cannot verify package signatures. This action needs npm 10.6.0 or newer; below that, npm reports valid packages as tampered with because its own bundled keys are stale.\n' "$NPM_VERSION"
-          printf '::error::Use actions/setup-node with node-version 20.14 or newer (22 is what the gates are tested on), or pin vaultcompasshq/conductor@v0.4.0, which does not verify.\n'
+          printf '::error::Pin a Node release that carries a newer npm: 20.14.0 or later, or 22.1.0 or later. A bare major is not enough, because Node 22.0.0 ships npm 10.5.1. Or pin vaultcompasshq/conductor@v0.4.0, which does not verify.\n'
           exit 1
         fi
 

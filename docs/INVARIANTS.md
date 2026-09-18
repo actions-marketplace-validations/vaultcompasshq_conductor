@@ -455,6 +455,27 @@ signature is, so it does not require provenance despite all four packages
 publishing it. What remains is that every name and version in the tree, gates
 included, has to be one npmjs currently serves with a valid signature.
 
+THE CLIENT HAS A FLOOR, AND IT IS npm 10.6.0. `npm audit signatures` is not
+version-stable: below 10.6.0 it fails on a CLEAN install of these very
+packages, because the client's bundled keys and TUF root are stale. On 10.5.0
+it says "Someone might have tampered with these packages", naming ours; on
+10.2.4 it is `EEXPIREDSIGNATUREKEY`. Bisected against a real four-gate install:
+8.19.4, 9.9.4, 10.2.4 and 10.5.0 fail; 10.6.0 and later pass. That band maps to
+Node 18.19.x and 20.10 through 20.13.
+
+**A BARE MAJOR DOES NOT CLEAR THE FLOOR.** Node 22.0.0 ships npm 10.5.1, inside
+the failing band, and `setup-node` satisfies a major-only spec from the runner's
+tool cache when it can. The sibling actions pin `node-version: '22'` and still
+carry this floor for that reason: an earlier version of that wave left it out on
+the grounds that the pin covered it, and it does not.
+
+The floor extracts the first version-shaped token rather than validating the
+string and then splitting it. A `grep -Eq` shape check matches PER LINE while
+the arithmetic reads the WHOLE string, so a client printing an upgrade notice
+above its version passed the check and then failed the comparison, leaving the
+floor skipped. That shipped twice here. An output with no version in it is
+refused, because a guard that fails open when it cannot see is not a guard.
+
 KNOWN CONSEQUENCE OF FAILING CLOSED: a runner pointed at a mirror or proxy that
 does not serve `/-/npm/v1/keys`, or a sigstore outage, installs fine and then
 fails this step with `EMISSINGSIGNATUREKEY`. Documented in the README rather

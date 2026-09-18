@@ -311,7 +311,10 @@ function runInstall(
       // tampered with. A stub that printed nothing would make the step refuse,
       // which is correct behaviour against a client it cannot identify but
       // says nothing about the action.
-      `case "$1" in --version) printf '%s\\n' "${npmVersion}" ;; ` +
+      // `npmVersion` is written verbatim, so a test can hand it MULTIPLE lines
+      // and reproduce a client that prints an upgrade notice above its
+      // version. That shape defeated two earlier versions of the floor.
+      `case "$1" in --version) printf '%b\\n' "${npmVersion}" ;; ` +
       'install) mkdir -p "${npm_config_prefix}/lib" ;; esac\n',
   );
   chmodSync(shim, 0o755);
@@ -371,6 +374,22 @@ describe('action.yml installs the gates without trusting them first', () => {
     for (const ok of ['10.6.0', '10.9.2', '11.0.0']) {
       expect([ok, runInstall({}, ok).status]).toEqual([ok, 0]);
     }
+  });
+
+  it('still sees the version when npm prints a notice above it', () => {
+    // The shape that defeated two earlier versions of this floor. A client
+    // that prints an upgrade notice first passed the per-line shape check and
+    // then failed the arithmetic on the whole string, so the `if` read false
+    // and the floor was skipped -- on a client the floor exists to refuse.
+    const old = runInstall({}, 'npm notice a new version is available\\n10.5.0');
+    expect(old.status).not.toBe(0);
+    expect(old.stderr).toContain('10.6.0 or newer');
+    expect(old.argv).not.toContain('install');
+
+    // And the same shape must not refuse a client that is fine.
+    const current = runInstall({}, 'npm notice a new version is available\\n10.9.2');
+    expect(current.status).toBe(0);
+    expect(current.argv).toContain('install');
   });
 
   it('refuses rather than assumes when it cannot read a version at all', () => {
