@@ -289,13 +289,34 @@ function runValidate(overrides: Record<string, string> = {}) {
  * Returns the argument vector npm was handed and the lines the step appended
  * to GITHUB_PATH.
  */
-function runInstall(overrides: Record<string, string> = {}): { argv: string[]; githubPath: string } {
+function runInstall(
+  overrides: Record<string, string> = {},
+  npmVersion = '10.9.2',
+): { argv: string[]; githubPath: string; prefix: string; status: number; stderr: string } {
   const dir = tempDir();
   const bin = path.join(dir, 'bin');
   mkdirSync(bin, { recursive: true });
   const record = path.join(dir, 'npm-argv.txt');
   const shim = path.join(bin, 'npm');
-  writeFileSync(shim, `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg" >> ${JSON.stringify(record)}; done\n`);
+  // The shim also creates `<prefix>/lib` on an install, because a real global
+  // install does and the step writes a manifest there and verifies from
+  // inside it. A stub that only recorded argv would abort the step on a
+  // missing directory, which would be the harness failing rather than the
+  // action -- and would hide whether the verification happens at all.
+  writeFileSync(
+    shim,
+    `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg" >> ${JSON.stringify(record)}; done\n` +
+      // A real npm answers `--version` with a version, and the step now reads
+      // it: below 10.6.0 the signature verification calls a clean install
+      // tampered with. A stub that printed nothing would make the step refuse,
+      // which is correct behaviour against a client it cannot identify but
+      // says nothing about the action.
+      // `npmVersion` is written verbatim, so a test can hand it MULTIPLE lines
+      // and reproduce a client that prints an upgrade notice above its
+      // version. That shape defeated two earlier versions of the floor.
+      `case "$1" in --version) printf '%b\\n' "${npmVersion}" ;; ` +
+      'install) mkdir -p "${npm_config_prefix}/lib" ;; esac\n',
+  );
   chmodSync(shim, 0o755);
 
   const prefix = path.join(dir, 'prefix');
@@ -312,13 +333,140 @@ function runInstall(overrides: Record<string, string> = {}): { argv: string[]; g
       ...defaultVersionEnv(overrides),
     },
   });
-  expect(result.status).toBe(0);
 
   return {
+    status: result.status ?? -1,
+    // GitHub reads `::error::` annotations from STDOUT, so that is where the
+    // step writes them and where a test has to look.
+    stderr: `${result.stdout ?? ''}${result.stderr ?? ''}`,
     argv: readFileSync(record, 'utf8').split('\n').filter((line) => line.length > 0),
     githubPath: readFileSync(githubPath, 'utf8'),
+    prefix,
   };
 }
+
+describe('action.yml installs the gates without trusting them first', () => {
+  it('refuses an npm too old to verify signatures, naming the real cause', () => {
+    // `npm audit signatures` is not version-stable. Below 10.6.0 it fails on a
+    // CLEAN install of these very packages, because the client's bundled keys
+    // and TUF root are stale. On 10.5.0 it says "Someone might have tampered
+    // with these packages", naming our own; on 10.2.4 it is
+    // EEXPIREDSIGNATUREKEY. Both are false and both are alarming.
+    //
+    // Bisected against a real install of the four gates: 8.19.4, 9.9.4, 10.2.4
+    // and 10.5.0 fail; 10.6.0 and later pass. That maps to Node 18.19.x and
+    // 20.10 through 20.13, which setup-node will hand a consumer today. This
+    // action does not install Node itself -- the documented workflow has the
+    // caller do it -- so the floor is enforced rather than assumed.
+    for (const old of ['8.19.4', '9.9.4', '10.2.4', '10.5.0']) {
+      const run = runInstall({}, old);
+      expect([old, run.status]).not.toEqual([old, 0]);
+      expect(run.stderr).toContain(old);
+      expect(run.stderr).toContain('10.6.0 or newer');
+      // It must never reach the install with a client that cannot verify.
+      expect(run.argv).not.toContain('install');
+    }
+  });
+
+  it('accepts the first npm that actually verifies, and newer', () => {
+    // The floor must not be too high either: 10.6.0 is the first version
+    // measured to pass, so refusing it would break consumers for nothing.
+    for (const ok of ['10.6.0', '10.9.2', '11.0.0']) {
+      expect([ok, runInstall({}, ok).status]).toEqual([ok, 0]);
+    }
+  });
+
+  it('still sees the version when npm prints a notice above it', () => {
+    // The shape that defeated two earlier versions of this floor. A client
+    // that prints an upgrade notice first passed the per-line shape check and
+    // then failed the arithmetic on the whole string, so the `if` read false
+    // and the floor was skipped -- on a client the floor exists to refuse.
+    const old = runInstall({}, 'npm notice a new version is available\\n10.5.0');
+    expect(old.status).not.toBe(0);
+    expect(old.stderr).toContain('10.6.0 or newer');
+    expect(old.argv).not.toContain('install');
+
+    // And the same shape must not refuse a client that is fine.
+    const current = runInstall({}, 'npm notice a new version is available\\n10.9.2');
+    expect(current.status).toBe(0);
+    expect(current.argv).toContain('install');
+  });
+
+  it('refuses rather than assumes when it cannot read a version at all', () => {
+    // A guard that fails open when it cannot see is not a guard. An earlier
+    // draft compared the raw string: an unexpected answer made the comparison
+    // error, the `if` read false, and every client passed the floor.
+    const run = runInstall({}, '');
+    expect(run.status).not.toBe(0);
+    expect(run.argv).not.toContain('install');
+  });
+
+  it('never lets an installed package run its own install scripts', () => {
+    // This step runs on a runner holding the job's token, and the four things
+    // it installs are CONTROL INPUTS: they decide whether a pull request is
+    // allowed to merge. Without `--ignore-scripts` every package in the
+    // resolved tree gets arbitrary code execution here on every run.
+    //
+    // Verified against the real registry rather than assumed to transfer from
+    // vault-guard: all four gates install and report their versions correctly
+    // with the flag set.
+    expect(runInstall().argv).toContain('--ignore-scripts');
+  });
+
+  it('declares all four gates in a manifest, or the audit skips every one of them', () => {
+    // `npm audit signatures` audits the tree's EDGES OUT, and a global install
+    // leaves `<prefix>/lib` with a `node_modules` and no manifest, so the root
+    // declares nothing and the four packages just installed sit on the far end
+    // of no edge. Their dependencies get audited; the gates themselves do not.
+    //
+    // Measured on the real four-package tree: 32 signatures and 8 attestations
+    // without this file, 36 and 12 with it. The four missing ones are exactly
+    // the four gates. This bug shipped once in vault-guard's single-package
+    // version of the same step and was caught in review.
+    const run = runInstall();
+    const manifest = JSON.parse(
+      readFileSync(path.join(run.prefix, 'lib', 'package.json'), 'utf8'),
+    ) as { dependencies: Record<string, string> };
+
+    expect(Object.keys(manifest.dependencies).sort()).toEqual([
+      '@vaultcompass/conductor',
+      '@vaultcompass/dep-guard',
+      '@vaultcompass/intent-guard',
+      '@vaultcompass/vault-guard',
+    ]);
+    // The NAMES are what matter to the audit: it resolves each edge by name
+    // and audits the version that is on disk. A manifest declaring a wrong or
+    // even nonexistent version still audits the installed one and exits 0,
+    // measured. So these version assertions pin the file against DRIFT from
+    // the install; they are not what makes the check cover the right thing.
+    // Naming a package that is not installed is the quiet case: the audit
+    // skips it and still exits 0.
+    expect(manifest.dependencies['@vaultcompass/vault-guard']).toBe('1.7.0');
+    expect(manifest.dependencies['@vaultcompass/intent-guard']).toBe('1.4.0');
+    expect(manifest.dependencies['@vaultcompass/conductor']).toBe('0.4.0');
+    expect(manifest.dependencies['@vaultcompass/dep-guard']).toBe('0.6.0');
+  });
+
+  it('carries a version override into the manifest as well as the install', () => {
+    // Keeps the manifest honest about what was installed. Not a security
+    // property: see above, the audit reads the name and takes the version off
+    // disk.
+    const run = runInstall({ VAULT_GUARD_VERSION: '1.7.0' });
+    const manifest = JSON.parse(
+      readFileSync(path.join(run.prefix, 'lib', 'package.json'), 'utf8'),
+    ) as { dependencies: Record<string, string> };
+    expect(manifest.dependencies['@vaultcompass/vault-guard']).toBe('1.7.0');
+  });
+
+  it('verifies what the registry serves for every name and version it installed', () => {
+    // Deliberately not "verifies what it installed": the command refetches
+    // manifests from the registry and hashes nothing on disk, so a tampered
+    // install passes it. Bounded, and the action comments say so.
+    const argv = runInstall().argv;
+    expect(argv).toContain('audit');
+    expect(argv).toContain('signatures');
+  });
+});
 
 describe('action.yml installs the gates outside the tree', () => {
   it('pins all four packages to an exact version by default', () => {
@@ -364,13 +512,23 @@ describe('action.yml installs the gates outside the tree', () => {
   it('asks npm for exactly the four packages at exactly the input versions', () => {
     const { argv } = runInstall();
 
+    // Every argument npm is given across the whole step, in order. The
+    // verification call is part of it: asserting only the install would let a
+    // second npm invocation be added, or removed, without anything noticing.
     expect(argv).toEqual([
+      // The client-version preflight. Below npm 10.6.0 the verification at the
+      // end of this step calls a clean install tampered with, so the step
+      // refuses up front and says which npm it found.
+      '--version',
       'install',
       '-g',
+      '--ignore-scripts',
       '@vaultcompass/conductor@0.4.0',
       '@vaultcompass/dep-guard@0.6.0',
       '@vaultcompass/vault-guard@1.7.0',
       '@vaultcompass/intent-guard@1.4.0',
+      'audit',
+      'signatures',
     ]);
   });
 

@@ -177,11 +177,131 @@ runs:
       run: |
         set -eu
         mkdir -p "$npm_config_prefix"
-        npm install -g \
+
+        # THE VERIFICATION BELOW NEEDS A RECENT npm, AND SAYS SOMETHING
+        # ALARMING AND FALSE ON AN OLD ONE.
+        #
+        # `npm audit signatures` is not version-stable. Below 10.6.0 it fails
+        # on a CLEAN, untampered install of these very packages, because the
+        # client's bundled keys and TUF root are stale rather than because
+        # anything is wrong:
+        #
+        #   npm 10.2.4  EEXPIREDSIGNATUREKEY, "the corresponding public key
+        #               has expired 2025-01-29"
+        #   npm 10.5.0  "5 packages have invalid attestations ... Someone might
+        #               have tampered with these packages since they were
+        #               published on the registry!"
+        #
+        # Bisected against a real install of the four gates: 8.19.4, 9.9.4,
+        # 10.2.4 and 10.5.0 all fail; 10.6.0 and every later version pass. That
+        # maps to Node 18.19.x and 20.10 through 20.13, which `setup-node` will
+        # happily give a consumer today.
+        #
+        # This check exists so that a stale client is reported AS a stale
+        # client. Without it the gate tells a repository that its dependencies
+        # may have been tampered with, which is false, and is the same class of
+        # failure as reporting a scan that never ran as findings.
+        #
+        # Unlike its sibling actions, this one does not install Node itself --
+        # the documented workflow has the caller do that -- so the client here
+        # is whatever the consumer set up, and the floor has to be enforced
+        # rather than assumed.
+        # EXTRACTED, not validated-then-split, and this distinction has already
+        # cost two attempts.
+        #
+        # The first draft compared the raw string from `npm --version`: an
+        # unexpected answer made the comparison error, the `if` read false, and
+        # the floor let everything through. The second added
+        # `grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'` -- but grep matches PER LINE
+        # while the arithmetic below reads the WHOLE string, so a client that
+        # printed an upgrade notice above its version passed the shape check
+        # and then failed the comparison exactly as before:
+        #
+        #   [: npm notice a new version is available
+        #   10: integer expected
+        #
+        # and the floor was skipped again. Twice, in a guard whose entire
+        # reason for existing is that failing open was the bug.
+        #
+        # So: pull the first version-shaped token out of the output and work
+        # only with that. A line of notice above the version is handled; an
+        # output with no version in it at all yields the empty string and is
+        # refused below. `|| true` because grep exits 1 on no match and this
+        # runs under `set -e`.
+        NPM_VERSION="$(npm --version 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
+        if [ -z "$NPM_VERSION" ]; then
+          printf '::error::conductor: could not read an npm version to check. Refusing rather than assuming the client can verify signatures.\n'
+          exit 1
+        fi
+        NPM_MAJOR="${NPM_VERSION%%.*}"
+        NPM_REST="${NPM_VERSION#*.}"
+        NPM_MINOR="${NPM_REST%%.*}"
+        if [ "$NPM_MAJOR" -lt 10 ] || { [ "$NPM_MAJOR" -eq 10 ] && [ "$NPM_MINOR" -lt 6 ]; }; then
+          printf '::error::conductor: npm %s cannot verify package signatures. This action needs npm 10.6.0 or newer; below that, npm reports valid packages as tampered with because its own bundled keys are stale.\n' "$NPM_VERSION"
+          printf '::error::Pin a Node release that carries a newer npm: 20.14.0 or later, or 22.1.0 or later. A bare major is not enough, because Node 22.0.0 ships npm 10.5.1. Or pin vaultcompasshq/conductor@v0.4.0, which does not verify.\n'
+          exit 1
+        fi
+
+        # `--ignore-scripts`, because this step runs on a runner holding the
+        # job's token and the four things it installs are CONTROL INPUTS: they
+        # decide whether a pull request is allowed to merge. Without the flag,
+        # every package in the resolved tree gets arbitrary code execution
+        # here, on every run, which is a strange amount of trust to extend
+        # from the tools whose job is deciding whether this repository can be
+        # trusted.
+        #
+        # Checked against the real registry rather than assumed to carry over
+        # from any one gate: all four install and report their own versions
+        # correctly with the flag set.
+        npm install -g --ignore-scripts \
           "@vaultcompass/conductor@$CONDUCTOR_VERSION" \
           "@vaultcompass/dep-guard@$DEP_GUARD_VERSION" \
           "@vaultcompass/vault-guard@$VAULT_GUARD_VERSION" \
           "@vaultcompass/intent-guard@$INTENT_GUARD_VERSION"
+
+        # A ROOT MANIFEST, WITHOUT WHICH THE NEXT COMMAND SKIPS ALL FOUR GATES.
+        #
+        # `npm audit signatures` audits the tree's EDGES OUT: it loads the
+        # local prefix and walks what the root declares as dependencies. A
+        # global install leaves `<prefix>/lib` holding a `node_modules` and NO
+        # manifest, so the root declares nothing and the four packages just
+        # installed are on the far end of no edge. Their transitive
+        # dependencies are, so those get audited and the gates do not.
+        #
+        # Measured on this exact four-package tree: 32 signatures and 8
+        # attestations without this file, 36 and 12 with it. The four missing
+        # ones are the four gates. The single-package version of this step
+        # shipped in vault-guard without the manifest and recorded the short
+        # count as evidence that it worked.
+        printf '{"name":"conductor-action-verify","private":true,"dependencies":{"@vaultcompass/conductor":"%s","@vaultcompass/dep-guard":"%s","@vaultcompass/vault-guard":"%s","@vaultcompass/intent-guard":"%s"}}\n' \
+          "$CONDUCTOR_VERSION" "$DEP_GUARD_VERSION" "$VAULT_GUARD_VERSION" "$INTENT_GUARD_VERSION" \
+          > "$npm_config_prefix/lib/package.json"
+
+        # WHAT THIS COMMAND PROVES, narrowly, because the tempting summary is
+        # false. It asks the registry for each name and version in the tree and
+        # checks the registry signature served back.
+        #
+        # It does NOT read the installed files: the manifest is refetched
+        # rather than anything on disk being hashed, so a tampered install is
+        # invisible to it. It does NOT defeat a compromised registry, which
+        # signs what it serves. And a MISSING attestation is not a failure,
+        # only a missing or invalid signature is, so it does not require
+        # provenance despite all four packages publishing it.
+        #
+        # What remains is worth having: every name and version in the tree, the
+        # four gates included, has to be one npmjs currently serves with a
+        # valid registry signature.
+        #
+        # Fails closed under `set -eu`, deliberately. KNOWN CONSEQUENCE: a
+        # consumer whose runner points npm at a mirror or proxy that does not
+        # serve `/-/npm/v1/keys` installs fine and then fails here with
+        # EMISSINGSIGNATUREKEY, and a sigstore or TUF outage does the same to
+        # everyone at once. Documented in the README rather than left to be
+        # discovered from a red required check.
+        # In a subshell, because a line follows this one and it must not
+        # inherit the verification directory as its cwd. A failing subshell
+        # still trips `set -e`, so this stays a gate rather than a note.
+        ( cd "$npm_config_prefix/lib" && npm audit signatures )
         # On PATH for the steps after this one rather than called by an
         # absolute path. The umbrella resolves each gate by NAME, so the gates
         # have to be findable the same way the umbrella is.
