@@ -181,7 +181,7 @@ runs:
         # THE VERIFICATION BELOW NEEDS A RECENT npm, AND SAYS SOMETHING
         # ALARMING AND FALSE ON AN OLD ONE.
         #
-        # `npm audit signatures` is not version-stable. Below 10.6.0 it fails
+        # `npm audit signatures` is not version-stable. Below 10.5.2 it fails
         # on a CLEAN, untampered install of these very packages, because the
         # client's bundled keys and TUF root are stale rather than because
         # anything is wrong:

@@ -18,24 +18,63 @@
 // `conductor-version` input.
 
 import { describe, expect, test } from '@jest/globals';
-import { classifyRelease, parseExactSemver, compareExactSemver, readActionVersionDefault } from '../lib/release-kind.mjs';
+import {
+  classifyRelease,
+  parseExactSemver,
+  compareExactSemver,
+  readActionVersionDefault,
+  readInputDefault,
+} from '../lib/release-kind.mjs';
 
 // All four `-version` inputs, at the real file's indentation, because the
-// classifier now reads every one of them. Three of the descriptions refer to
-// `conductor-version` by name on purpose: that is the shape a loose regex
-// lands in, reading the NEXT input's default instead of the intended one.
+// classifier reads every one of them.
+//
+// THIS FIXTURE CARRIES BOTH SHAPES THAT BROKE A TEXT-MATCHING PARSER, and it
+// carries them literally rather than in spirit. An earlier version of this
+// file claimed to reproduce the first one with descriptions reading "Same rule
+// as conductor-version." -- with a PERIOD, where the slip needs a COLON -- so
+// dropping the parser back to the loose regex passed every test in here.
+//
+//   1. `stage`, EARLIER in the file than `conductor-version`, has the literal
+//      text `conductor-version:` in its description. A parser that searches
+//      for the name anywhere lands there and reads `default: ci`, which is the
+//      next input's default and not a version at all.
+//
+//   2. `conductor-version`'s own description block contains a line reading
+//      `default: 9.9.9` ABOVE its real default. That line is the text of a
+//      folded block scalar, not a key, and only a YAML parser knows the
+//      difference. A line matcher anchored to the input's own block still
+//      takes it, which is the ACCEPT direction: a stale version that happens
+//      to be published, read in place of a real pin that is not.
+//
+//   3. `vault-guard-version`'s default is QUOTED, because action.yml may quote
+//      one at any time and `'1.7.0'` must read as `1.7.0` rather than as a
+//      string with quote marks in it.
 const ACTION_YML = `
 inputs:
+  stage:
+    description: >-
+      Which stopping point this job is. Stages are cumulative, so ci runs
+      everything that is enabled. It is not one of the version pins; those
+      are written one per line, starting with conductor-version: and
+      continuing with one entry per gate.
+    default: ci
   conductor-version:
     description: >-
-      The exact version of the umbrella this action installs and runs.
+      The exact version of the umbrella this action installs and runs. An
+      exact version, never a range and never a dist-tag. An earlier draft of
+      this description showed the pin inline, on a line of its own:
+
+        default: 9.9.9
+
+      which is prose rather than a key, however much it looks like one.
     default: 0.4.0
   dep-guard-version:
     description: Same rule as conductor-version.
     default: 0.6.0
   vault-guard-version:
     description: Same rule as conductor-version.
-    default: 1.7.0
+    default: '1.7.0'
   intent-guard-version:
     description: Same rule as conductor-version.
     default: 1.4.0
@@ -91,6 +130,46 @@ describe('compareExactSemver', () => {
   });
 });
 
+describe('readInputDefault', () => {
+  test('reads the real default of every input, not a line that looks like one', () => {
+    // THE WHOLE FIXTURE IS THE TEST HERE. `stage` sits above
+    // `conductor-version` with the literal `conductor-version:` in its
+    // description, and `conductor-version`'s own description block holds a
+    // line reading `default: 9.9.9` above the real one. Both are prose. A
+    // parser that reads either of them returns a version this repository
+    // never pinned, and on the accept side that means a Release page cut for
+    // an action whose consumers die at `npm install -g`.
+    expect(readInputDefault(ACTION_YML, 'stage')).toBe('ci');
+    expect(readInputDefault(ACTION_YML, 'conductor-version')).toBe('0.4.0');
+    expect(readInputDefault(ACTION_YML, 'dep-guard-version')).toBe('0.6.0');
+    expect(readInputDefault(ACTION_YML, 'vault-guard-version')).toBe('1.7.0');
+    expect(readInputDefault(ACTION_YML, 'intent-guard-version')).toBe('1.4.0');
+  });
+
+  test('reads a quoted default as the version, without its quote marks', () => {
+    // action.yml is free to quote a default at any time, and a quoted version
+    // compared against an unquoted package version would refuse a correct
+    // release while naming a version that looks identical in the message.
+    const quoted = `
+inputs:
+  conductor-version:
+    description: The umbrella.
+    default: '0.4.0'
+`;
+    expect(readInputDefault(quoted, 'conductor-version')).toBe('0.4.0');
+    expect(readActionVersionDefault(quoted)).toBe('0.4.0');
+  });
+
+  test('refuses an input that is absent, and one that has no default', () => {
+    expect(() => readInputDefault('inputs:\n  other:\n    default: 1.0.0\n', 'conductor-version')).toThrow(
+      /no conductor-version input/
+    );
+    expect(() =>
+      readInputDefault('inputs:\n  conductor-version:\n    description: No default here.\n', 'conductor-version')
+    ).toThrow(/no default/);
+  });
+});
+
 describe('readActionVersionDefault', () => {
   test('reads the conductor-version default, not another input', () => {
     // Four inputs in this file end in `-version` and three of them are other
@@ -116,6 +195,22 @@ describe('classifyRelease, package releases', () => {
     // no tag here to classify.
     for (const empty of [null, undefined, '']) {
       expect(classify({ tagName: empty })).toEqual({ actionOnly: false });
+    }
+  });
+
+  test('a workflow_dispatch run with no tag still checks the action default', () => {
+    // Deleting the assertion on the no-tag path used to pass every test in
+    // this file, so nothing pinned it. It is the same failure as on the
+    // tagged path: an action left pinned to a version this run is about to
+    // supersede.
+    //
+    // The workflow does not reach this branch today (release.yml triggers on
+    // tag push only), which is exactly why a test has to hold it: a branch no
+    // run exercises is a branch no run would catch breaking either.
+    for (const empty of [null, undefined, '']) {
+      expect(() =>
+        classify({ tagName: empty, actionYmlText: ACTION_YML.replace('default: 0.4.0', 'default: 0.3.0') })
+      ).toThrow(/default/);
     }
   });
 
@@ -161,6 +256,24 @@ describe('classifyRelease, action-only candidates', () => {
     expect(() => classify({ changelogText: null })).toThrow(/CHANGELOG/);
   });
 
+  test('wants a real heading, not the heading text quoted inside a line', () => {
+    // The heading pattern is anchored to the start of a line. Dropping that
+    // anchor passed every other test in this file, and it is not a pedantic
+    // difference: prose that mentions a version, which is exactly what an
+    // Unreleased section is full of, would then count as somebody having
+    // written the entry. That is the one condition separating a deliberate
+    // action-only release from a version bump someone forgot to commit.
+    const mentionOnly = `# Changelog
+
+## [Unreleased]
+
+Nothing yet; see ## [0.4.1] below once it is written.
+
+## [0.4.0] - 2026-09-06
+`;
+    expect(() => classify({ changelogText: mentionOnly })).toThrow(/CHANGELOG/);
+  });
+
   test('refuses when the package version is not on the registry', () => {
     // An action-only tag ships a scanner that is already published. Without
     // this, its Release page would describe a version nobody can install.
@@ -199,6 +312,19 @@ describe('classifyRelease, action-only candidates', () => {
           name === '@vaultcompass/conductor' ? version : null,
       })
     ).toThrow(/registry/);
+  });
+
+  test('refuses a gate pin that is a range or a dist-tag, and says so', () => {
+    // Without the shape check this still fails closed, because the registry
+    // lookup answers with something other than the text asked for. But it
+    // fails closed while reading as a registry problem, which sends whoever
+    // is unpicking it to npmjs instead of to the line in action.yml that is
+    // wrong.
+    for (const bad of ['^1.0.0', 'latest', '1.7']) {
+      expect(() =>
+        classify({ actionYmlText: ACTION_YML.replace("default: '1.7.0'", `default: '${bad}'`) })
+      ).toThrow(/not an exact version/);
+    }
   });
 
   test('refuses when the action default moved but the package did not', () => {

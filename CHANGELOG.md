@@ -49,19 +49,22 @@ the action's `conductor-version` default stays `0.4.0`.
 
 - **A floor on the npm client, so the action cannot report a clean install as
   tampered with.** `npm audit signatures` is not version-stable: below npm
-  **10.6.0** it fails on an untampered install of these very packages, because
+  **10.5.2** it fails on an untampered install of these very packages, because
   the client's own bundled keys and TUF root are stale. On 10.5.0 it reports
   *"Someone might have tampered with these packages since they were published
   on the registry!"*, naming ours; on 10.2.4 it is `EEXPIREDSIGNATUREKEY`.
-  Bisected against a real four-gate install: 8.19.4, 9.9.4, 10.2.4 and 10.5.0
-  fail; 10.6.0 and later pass.
+  Bisected against a real four-gate install, with a cold cache and a fresh
+  home so no newer client could have primed the TUF root or the key set:
+  8.19.4, 9.9.4, 10.2.4, 10.5.0 and 10.5.1 fail; 10.5.2 and later pass, with
+  10.5.2 verifying the same package and attestation counts as current npm
+  rather than a reduced set.
 
   This action does not install Node itself, by design: the documented workflow
   has the caller do that. So the floor is enforced rather than assumed, and
   the refusal names the npm it found.
 
   Note that a bare major is not enough: **Node 22.0.0 ships npm 10.5.1**,
-  inside the failing band. Pin 20.14.0 or later, or 22.1.0 or later.
+  inside the failing band. Pin 20.13.0 or later, or 22.1.0 or later.
 
 ### Added
 

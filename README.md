@@ -608,7 +608,11 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # Not a bare major: Node 22.0.0 ships npm 10.5.1, which the action
+          # refuses because that client reports a clean install as tampered
+          # with. 22.1.0 or later, or 20.13.0 or later, carries an npm that
+          # can verify.
+          node-version: '22.11.0'
           cache: pnpm
       # Your own dependencies. The gates are NOT among the things this has to
       # install: the action installs those itself, globally, at the versions

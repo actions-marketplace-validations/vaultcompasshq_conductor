@@ -26,6 +26,8 @@
 // matters here in a way it did not there: FOUR inputs in this action.yml end
 // in `-version`, and three of them name other people's packages.
 
+import { parse as parseYaml } from 'yaml';
+
 /**
  * An exact version and nothing else: three numeric components, no prerelease,
  * no build suffix, no leading zeros. Returns [major, minor, patch] or null.
@@ -56,11 +58,10 @@ export function compareExactSemver(a, b) {
 /**
  * The `conductor-version` input's default, read out of action.yml.
  *
- * Deliberately anchored to that input's own block rather than to the first
- * `default:` in the file. Four inputs here end in `-version`, and the other
- * three are the gates: reading one of those would compare the umbrella
- * against a gate's version and refuse a correct release, or worse, accept a
- * wrong one.
+ * Named explicitly rather than taken as "the first `default:` in the file".
+ * Four inputs here end in `-version`, and the other three are the gates:
+ * reading one of those would compare the umbrella against a gate's version
+ * and refuse a correct release, or worse, accept a wrong one.
  */
 export function readActionVersionDefault(actionYmlText) {
   return readInputDefault(actionYmlText, 'conductor-version');
@@ -84,35 +85,58 @@ export const GATE_INPUTS = [
 ];
 
 /**
- * One input's `default:`, anchored to that input's own block.
+ * One input's `default:`, read by PARSING action.yml rather than by matching
+ * lines in it.
  *
- * Anchored to a two-space key at the start of a line rather than searching for
- * the name anywhere, because FOUR inputs in this action.yml end in `-version`
- * and their descriptions refer to each other by name. A loose search can land
- * in a description and read the NEXT input's default, which would compare the
- * umbrella against a gate.
+ * TEXT MATCHING WAS TRIED HERE TWICE AND WAS WRONG BOTH TIMES. The first shape
+ * searched for the input's name anywhere in the file, which landed inside a
+ * description that named another input and read the NEXT input's default. The
+ * second anchored to `  <name>:` at the start of a line, which fixed that one
+ * and left a worse hole: every description in this action.yml is a `>-` block
+ * scalar, and a line inside such a block that happens to read `default: 1.7.0`
+ * is prose, not a key, yet the line matcher took it. Prose in a description is
+ * writeable by anyone editing the file, so the accept direction was reachable:
+ * a stale version read out of a description, found published, while the real
+ * pin naming an unpublished version went unchecked, and the Release page got
+ * cut for an action that dies at `npm install -g`.
+ *
+ * A YAML parser knows the difference between a key and the text of a block
+ * scalar, knows that `default: '1.7.0'` is the string 1.7.0, and costs nothing
+ * here: `yaml` is already a dependency of this package and `tests/action.test.ts`
+ * already parses this same file with it. Hand-written line parsers for YAML are
+ * the bug, not the implementation detail.
  */
 export function readInputDefault(actionYmlText, inputName) {
   if (typeof actionYmlText !== 'string') {
     throw new Error(`action.yml could not be read, so its ${inputName} default is unknown.`);
   }
-  const lines = actionYmlText.split('\n');
-  const at = lines.findIndex((line) => line === `  ${inputName}:`);
-  if (at === -1) {
+
+  let document;
+  try {
+    document = parseYaml(actionYmlText);
+  } catch (err) {
     throw new Error(
-      `action.yml has no ${inputName} input at the expected indentation, so the version it installs could not be checked.`
+      `action.yml is not valid YAML (${err.message}), so its ${inputName} default could not be read.`
     );
   }
-  for (let i = at + 1; i < lines.length; i += 1) {
-    // Stop at the next key at the same depth: a default that is not inside
-    // this input's own block is somebody else's.
-    if (/^ {2}\S/.test(lines[i])) break;
-    const match = /^\s*default:\s*(\S+)\s*$/.exec(lines[i]);
-    if (match) return match[1];
+
+  const input = document?.inputs?.[inputName];
+  if (input === undefined || input === null || typeof input !== 'object') {
+    throw new Error(
+      `action.yml has no ${inputName} input, so the version it installs could not be checked.`
+    );
   }
-  throw new Error(
-    `action.yml's ${inputName} input has no default, so the version it installs could not be checked against the package being released.`
-  );
+
+  const value = input.default;
+  if (value === undefined || value === null) {
+    throw new Error(
+      `action.yml's ${inputName} input has no default, so the version it installs could not be checked against the package being released.`
+    );
+  }
+
+  // Stringified rather than returned raw: YAML reads an unquoted `1.7` as a
+  // number, and every caller compares this against version TEXT.
+  return String(value);
 }
 
 // A package release must ship an action whose default names the version being
@@ -144,6 +168,12 @@ export function classifyRelease({
   // workflow_dispatch has no tag. The branch guard in the job keeps a dispatch
   // run on main; there is nothing here to classify and a dispatch is always a
   // package release.
+  //
+  // .github/workflows/release.yml currently triggers on tag push ONLY, so no
+  // run reaches this branch today. It is kept, and kept asserting, because it
+  // is the safe direction: the day a dispatch trigger is added back, the
+  // default has to be checked rather than assumed, and a branch that returned
+  // without asserting would publish whatever the action pinned.
   if (tagName === null || tagName === undefined || tagName === '') {
     assertPackageReleaseDefault({ packageVersion, actionYmlText, refDescription });
     return { actionOnly: false };
@@ -209,9 +239,26 @@ export function classifyRelease({
   // `npm install -g`. Checked as a list rather than one call so a pin added
   // later is covered by construction; the loop does not stop at the first hit,
   // or a tree whose LAST pin is broken would pass.
+  //
+  // EACH PIN IS CHECKED FOR SHAPE BEFORE IT IS LOOKED UP, because a pin of
+  // `^1.0.0` or `latest` is a different mistake from a pin naming a version
+  // nobody published, and only the shape check can say so. The registry
+  // lookup does fail closed on a range (`npm view` resolves it and answers
+  // with something other than the text asked for), but the refusal then reads
+  // as a registry problem and sends whoever is unpicking it to npmjs rather
+  // than to the line in action.yml that is actually wrong. It is also the
+  // same family of thing `parseExactSemver` exists to refuse everywhere else
+  // on this path: a spec npm cannot parse as a version is treated as a
+  // dist-tag, and a dist-tag moves.
   const shipped = [[packageName, packageVersion]];
   for (const [inputName, gateName] of GATE_INPUTS) {
-    shipped.push([gateName, readInputDefault(actionYmlText, inputName)]);
+    const pin = readInputDefault(actionYmlText, inputName);
+    if (parseExactSemver(pin) === null) {
+      throw new Error(
+        `Tag ${tagName} looks like an action-only release, but action.yml's ${inputName} input defaults to "${pin}", which is not an exact version (three numeric components, no prerelease, no build suffix, no leading zeros). A range or a dist-tag hands the choice of which program judges a pull request to whatever the registry serves on the morning of the run. Refusing to publish.`
+      );
+    }
+    shipped.push([gateName, pin]);
   }
 
   for (const [name, version] of shipped) {
