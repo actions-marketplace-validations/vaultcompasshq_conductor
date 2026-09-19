@@ -139,3 +139,10 @@ straight from a local branch without going through a pull request and a
 green `main` first; the release workflow re-runs build, typecheck, lint,
 and test before it publishes, but that is a second check, not a substitute
 for `main`'s own CI having already passed.
+
+## Findings log
+
+[FINDINGS.md](./FINDINGS.md) is a durable, append-by-PR record of what
+conductor actually did when run against real changes, including runs that
+caught nothing. Open a PR to append a row after you run it against real
+code, your own or someone else's.
