@@ -455,13 +455,19 @@ signature is, so it does not require provenance despite all four packages
 publishing it. What remains is that every name and version in the tree, gates
 included, has to be one npmjs currently serves with a valid signature.
 
-THE CLIENT HAS A FLOOR, AND IT IS npm 10.6.0. `npm audit signatures` is not
-version-stable: below 10.6.0 it fails on a CLEAN install of these very
+THE CLIENT HAS A FLOOR, AND IT IS npm 10.5.2. `npm audit signatures` is not
+version-stable: below 10.5.2 it fails on a CLEAN install of these very
 packages, because the client's bundled keys and TUF root are stale. On 10.5.0
 it says "Someone might have tampered with these packages", naming ours; on
-10.2.4 it is `EEXPIREDSIGNATUREKEY`. Bisected against a real four-gate install:
-8.19.4, 9.9.4, 10.2.4 and 10.5.0 fail; 10.6.0 and later pass. That band maps to
-Node 18.19.x and 20.10 through 20.13.
+10.2.4 it is `EEXPIREDSIGNATUREKEY`. Bisected against a real four-gate install,
+with a cold cache and a fresh home so no newer client could have primed the TUF
+root or the key set: 8.19.4, 9.9.4, 10.2.4, 10.5.0 and 10.5.1 fail; 10.5.2 and
+later pass, and 10.5.2 verifies the same package and attestation counts as
+current npm rather than a reduced set. That band maps to Node 18.19.x and 20.10
+through 20.12. An earlier draft of this paragraph put the floor at 10.6.0, from
+a bisection that tested 10.5.0 and then 10.6.0 and never tested what lay
+between: Node 20.13.0 and 20.13.1 ship npm 10.5.2, so that floor refused
+working clients while telling them they could not verify.
 
 **A BARE MAJOR DOES NOT CLEAR THE FLOOR.** Node 22.0.0 ships npm 10.5.1, inside
 the failing band, and `setup-node` satisfies a major-only spec from the runner's
@@ -867,6 +873,21 @@ EXACT VERSIONS ONLY, refused in a validate step against
 dist-tag would move the decision out of the workflow file and onto whatever
 the registry served that morning, which is the same defect in a slower form.
 `latest` is the case worth naming because it is the one somebody reaches for.
+
+ANYTHING THAT READS action.yml PARSES IT, AND NEVER MATCHES LINES IN IT.
+`scripts/lib/release-kind.mjs` reads all four `-version` defaults out of this
+file to decide whether a tag is a package release or an action-only one, and a
+hand-written line parser got that wrong twice. Searching for the input's name
+anywhere landed inside a description that mentioned another input and read the
+next input's default. Anchoring to `  <name>:` at the start of a line fixed
+that and left a worse hole: every description here is a `>-` block scalar, so
+a line of PROSE reading `default: 1.7.0` was taken as the key. That one is
+reachable in the ACCEPT direction, which is the direction that cuts a Release
+page for an action whose consumers die at `npm install -g`. The `yaml` package
+is already a dependency and `tests/action.test.ts` already parses this same
+file with it; a parser knows a key from the text of a block scalar, and knows
+that `default: '1.7.0'` is the string `1.7.0`. Quoting a default here is
+therefore safe, and adding a fifth input does not need a parser change.
 
 THE INSTALL IS UNCONDITIONAL, on push and `pull_request` alike. A
 conditional install would mean the action behaves one way on the runs that

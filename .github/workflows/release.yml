@@ -31,6 +31,14 @@ concurrency:
 
 jobs:
   release:
+    # Published so the smoke job can test the version that is actually on the
+    # registry. It used to derive that from the TAG, which is correct only for
+    # a package release: on an action-only tag the tag version is by
+    # definition not published, so the smoke job would have waited out its
+    # whole timeout for a version nobody ever pushed and then failed a release
+    # that did exactly what it was supposed to.
+    outputs:
+      package_version: ${{ steps.kind.outputs.package_version }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -66,16 +74,51 @@ jobs:
     # because it can also be started by workflow_dispatch. Neither applies
     # here: conductor is one package, and this workflow triggers on a tag
     # push and nothing else, so GITHUB_REF_NAME is always a tag name.
-    - name: Assert the tag matches the version being published
+    - name: Decide the release kind
+      id: kind
       run: |
         set -euo pipefail
         VERSION="$(node -p "require('./package.json').version")"
-        EXPECTED_TAG="v${VERSION}"
 
-        if [[ "${GITHUB_REF_NAME}" != "${EXPECTED_TAG}" ]]; then
-          echo "::error::Tag mismatch: pushed tag is ${GITHUB_REF_NAME}, but package.json is at version ${VERSION} (expected tag ${EXPECTED_TAG}). Publishing anyway would put ${VERSION} on the registry irreversibly under a GitHub Release named for a different version. Refusing to publish."
-          exit 1
-        fi
+        # TWO SHAPES OF TAG, and this step decides which one was pushed.
+        #
+        # A PACKAGE release reads "v" plus the package version, and everything
+        # below runs. An ACTION-ONLY release moves the tag past it while the
+        # published package stays where it is: action.yml, the README, the
+        # CHANGELOG and the docs moved, the package did not. Both are real
+        # releases; only the first publishes.
+        #
+        # This used to be a single assertion, "the tag must equal v$VERSION",
+        # which is right for the first shape and refuses the second outright.
+        # dep-guard's v0.6.1 tag went red that way before install, build or
+        # publish. Nothing was published, which was correct, but the tag got no
+        # Release page and every future action-only tag would have failed the
+        # same way.
+        #
+        # THE PROPERTY THE OLD ASSERTION BOUGHT SURVIVES. An action-only tag is
+        # a CANDIDATE that has to clear every condition in
+        # scripts/lib/release-kind.mjs: exact semver, ahead of the package
+        # version, an entry in CHANGELOG.md at the tagged commit, the package
+        # already on the registry, and an action default that still matches. A
+        # tag failing any of them is refused rather than quietly demoted to the
+        # release that publishes nothing. The rules live in that module because
+        # that is the part worth testing; scripts/tests/release-kind.test.mjs
+        # holds the cases, and pnpm test runs them.
+        #
+        # The script writes action_only to $GITHUB_OUTPUT itself, so nothing
+        # here parses its stdout.
+        node scripts/classify-release-tag.mjs \
+          --tag "${GITHUB_REF_NAME}" \
+          --package-name "@vaultcompass/conductor" \
+          --package-version "${VERSION}" \
+          --action-yml action.yml \
+          --changelog CHANGELOG.md
+
+        # The version that is on the registry once this run finishes, which is
+        # the package version on both paths and is NOT the tag version on an
+        # action-only one. The smoke job downstream tests this rather than
+        # parsing the tag.
+        echo "package_version=${VERSION}" >> "${GITHUB_OUTPUT}"
 
         # The checkout above uses actions/checkout's default fetch-depth of
         # 1, so this working copy holds the tagged commit and nothing else:
@@ -146,7 +189,13 @@ jobs:
     #
     # The skip is per exact version, so it never hides a real publish
     # failure of a version that is genuinely new.
+    # SKIPPED ENTIRELY ON AN ACTION-ONLY TAG, which publishes nothing by
+    # definition: the package it would push is already on the registry at that
+    # exact version, and the classifier above refused the tag unless that was
+    # true. Gated on the string 'false' rather than on a negation, so a step
+    # output that failed to be written cannot read as "go ahead and publish".
     - name: Publish to npm
+      if: steps.kind.outputs.action_only == 'false'
       run: |
         set -euo pipefail
         name="$(node -p "require('./package.json').name")"
@@ -164,12 +213,30 @@ jobs:
           pnpm publish --access public --no-git-checks
         fi
 
-    - name: Create GitHub Release
+    # Both kinds of release get a Release page; only the body differs, because
+    # a page saying "Published to npm" on a tag that published nothing is the
+    # kind of small lie that later gets believed.
+    - name: Create GitHub Release (package)
+      if: steps.kind.outputs.action_only == 'false'
       uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
       with:
         generate_release_notes: true
         body: |
           Published @vaultcompass/conductor to npm.
+
+    - name: Create GitHub Release (action-only)
+      if: steps.kind.outputs.action_only == 'true'
+      uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+      with:
+        generate_release_notes: true
+        body: |
+          Action-only release. This tag moves the composite action; the package
+          it installs stays where it was on npm and was already published
+          before this tag.
+
+          **Nothing was published to npm by this release.**
+
+          See CHANGELOG.md for what changed.
 
   smoke-published:
     name: Smoke test published CLI
@@ -188,10 +255,20 @@ jobs:
 
       - name: Install published CLI and run smoke commands
         shell: bash
+        env:
+          PACKAGE_VERSION: ${{ needs.release.outputs.package_version }}
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#v}"
+          # THE PACKAGE VERSION, NOT THE TAG VERSION. They are the same on a
+          # package release and different on an action-only one, where the tag
+          # moves past a package that stays put. Deriving this from the tag
+          # made the job wait out its full timeout for a version nobody
+          # published, then fail a release that behaved correctly.
+          VERSION="${PACKAGE_VERSION}"
+          if [ -z "${VERSION}" ]; then
+            echo "::error::The release job published no package_version, so there is nothing to smoke test. Refusing to guess from the tag."
+            exit 1
+          fi
           echo "Smoke testing @vaultcompass/conductor@${VERSION}"
 
           # A single package, so there is no cross-package registry

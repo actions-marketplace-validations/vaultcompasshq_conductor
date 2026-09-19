@@ -307,7 +307,7 @@ function runInstall(
     shim,
     `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg" >> ${JSON.stringify(record)}; done\n` +
       // A real npm answers `--version` with a version, and the step now reads
-      // it: below 10.6.0 the signature verification calls a clean install
+      // it: below 10.5.2 the signature verification calls a clean install
       // tampered with. A stub that printed nothing would make the step refuse,
       // which is correct behaviour against a client it cannot identify but
       // says nothing about the action.
@@ -347,31 +347,47 @@ function runInstall(
 
 describe('action.yml installs the gates without trusting them first', () => {
   it('refuses an npm too old to verify signatures, naming the real cause', () => {
-    // `npm audit signatures` is not version-stable. Below 10.6.0 it fails on a
+    // `npm audit signatures` is not version-stable. Below 10.5.2 it fails on a
     // CLEAN install of these very packages, because the client's bundled keys
     // and TUF root are stale. On 10.5.0 it says "Someone might have tampered
     // with these packages", naming our own; on 10.2.4 it is
     // EEXPIREDSIGNATUREKEY. Both are false and both are alarming.
     //
-    // Bisected against a real install of the four gates: 8.19.4, 9.9.4, 10.2.4
-    // and 10.5.0 fail; 10.6.0 and later pass. That maps to Node 18.19.x and
-    // 20.10 through 20.13, which setup-node will hand a consumer today. This
-    // action does not install Node itself -- the documented workflow has the
-    // caller do it -- so the floor is enforced rather than assumed.
-    for (const old of ['8.19.4', '9.9.4', '10.2.4', '10.5.0']) {
+    // Bisected against a real install of the four gates, on a cold cache and a
+    // fresh home: 8.19.4, 9.9.4, 10.2.4, 10.5.0 and 10.5.1 fail; 10.5.2 and
+    // later pass. That maps to Node 18.19.x and 20.10 through 20.12, which
+    // setup-node will hand a consumer today. This action does not install Node
+    // itself -- the documented workflow has the caller do it -- so the floor is
+    // enforced rather than assumed.
+    // 10.5.1 is the LAST version that fails, and it is what Node 22.0.0 ships.
+    //
+    // THE 20-DIGIT MAJOR IS NOT FILLER. The floor is shell arithmetic, and
+    // `[` refuses an operand that will not fit a machine integer: it writes
+    // "out of range" and exits 2, which an `if` reads as false. A
+    // refuse-if-bad shape would therefore have taken that as permission to
+    // proceed and installed on it. The step is written as accept-only-if
+    // instead, so the error leaves NPM_OK at 0 and the step refuses; nothing
+    // pinned that restructure until this input, which a mutant with the old
+    // shape passed every other assertion in this file while failing.
+    for (const old of ['8.19.4', '9.9.4', '10.2.4', '10.5.0', '10.5.1', '99999999999999999999.0.0']) {
       const run = runInstall({}, old);
       expect([old, run.status]).not.toEqual([old, 0]);
       expect(run.stderr).toContain(old);
-      expect(run.stderr).toContain('10.6.0 or newer');
+      expect(run.stderr).toContain('10.5.2 or newer');
       // It must never reach the install with a client that cannot verify.
       expect(run.argv).not.toContain('install');
     }
   });
 
   it('accepts the first npm that actually verifies, and newer', () => {
-    // The floor must not be too high either: 10.6.0 is the first version
-    // measured to pass, so refusing it would break consumers for nothing.
-    for (const ok of ['10.6.0', '10.9.2', '11.0.0']) {
+    // The floor must not be too high either: refusing a client that verifies
+    // fine breaks consumers for nothing.
+    // 10.5.2 leads the list deliberately: it is the first version measured to
+    // pass on a cold cache, and it is what Node 20.13.0 and 20.13.1 ship. The
+    // floor sat at 10.6.0 until a review bisected properly, and that number
+    // refused those consumers with a message saying their client could not
+    // verify when it could. Both edges of the real boundary are pinned now.
+    for (const ok of ['10.5.2', '10.6.0', '10.9.2', '11.0.0', '12.0.0']) {
       expect([ok, runInstall({}, ok).status]).toEqual([ok, 0]);
     }
   });
@@ -383,7 +399,7 @@ describe('action.yml installs the gates without trusting them first', () => {
     // and the floor was skipped -- on a client the floor exists to refuse.
     const old = runInstall({}, 'npm notice a new version is available\\n10.5.0');
     expect(old.status).not.toBe(0);
-    expect(old.stderr).toContain('10.6.0 or newer');
+    expect(old.stderr).toContain('10.5.2 or newer');
     expect(old.argv).not.toContain('install');
 
     // And the same shape must not refuse a client that is fine.
@@ -516,7 +532,7 @@ describe('action.yml installs the gates outside the tree', () => {
     // verification call is part of it: asserting only the install would let a
     // second npm invocation be added, or removed, without anything noticing.
     expect(argv).toEqual([
-      // The client-version preflight. Below npm 10.6.0 the verification at the
+      // The client-version preflight. Below npm 10.5.2 the verification at the
       // end of this step calls a clean install tampered with, so the step
       // refuses up front and says which npm it found.
       '--version',
