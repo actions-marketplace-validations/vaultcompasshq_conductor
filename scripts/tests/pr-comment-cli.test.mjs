@@ -122,7 +122,10 @@ describe('the pr-comment CLI', () => {
     expect(argv[0]).toEqual(['api', 'repos/acme/widgets/issues/42/comments', '--paginate']);
     expect(argv[1][0]).toBe('api');
     expect(argv[1][1]).toBe('repos/acme/widgets/issues/42/comments');
-    expect(argv[1][2]).toBe('-f');
+    // -F/--field, never -f/--raw-field: gh's `@<path>` file-read form only
+    // works with -F. -f would send the literal string "body=@<path>" as the
+    // comment body instead of reading the file.
+    expect(argv[1][2]).toBe('-F');
     // The body arrives at gh as an @-file reference, never as the report text
     // itself: no element of the argument vector carries the report.
     expect(argv[1][3]).toMatch(/^body=@/);
@@ -141,7 +144,11 @@ describe('the pr-comment CLI', () => {
     const dir = tempDir();
     const { bin, record } = ghShim(dir, {
       listResponse: JSON.stringify([
-        { id: 5, body: '<!-- conductor-report: pr-comment -->\nold report' },
+        {
+          id: 5,
+          body: '<!-- conductor-report: pr-comment -->\nold report',
+          user: { login: 'github-actions[bot]', type: 'Bot' },
+        },
       ]),
     });
     const reportFile = path.join(dir, 'conductor.txt');
@@ -156,7 +163,8 @@ describe('the pr-comment CLI', () => {
       'repos/acme/widgets/issues/comments/5',
       '-X',
       'PATCH',
-      expect.stringMatching(/^-f$/),
+      // -F/--field, never -f/--raw-field: see the create-comment case above.
+      expect.stringMatching(/^-F$/),
       expect.stringMatching(/^body=@/),
     ]);
   });

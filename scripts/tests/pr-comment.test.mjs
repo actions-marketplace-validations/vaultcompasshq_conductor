@@ -62,23 +62,52 @@ describe('buildCommentBody', () => {
   });
 });
 
+const BOT_AUTHOR = { login: 'github-actions[bot]', type: 'Bot' };
+const HUMAN_AUTHOR = { login: 'someone', type: 'User' };
+
 describe('findMarkedCommentId', () => {
-  it('finds the id of the comment carrying the marker', () => {
+  it('finds the id of the bot-authored comment carrying the marker', () => {
     const comments = [
-      { id: 1, body: 'an unrelated comment' },
-      { id: 2, body: `${MARKER}\nprior conductor report` },
-      { id: 3, body: 'another unrelated comment' },
+      { id: 1, body: 'an unrelated comment', user: HUMAN_AUTHOR },
+      { id: 2, body: `${MARKER}\nprior conductor report`, user: BOT_AUTHOR },
+      { id: 3, body: 'another unrelated comment', user: HUMAN_AUTHOR },
     ];
     expect(findMarkedCommentId(comments, MARKER)).toBe(2);
   });
 
   it('returns null when no comment carries the marker, so a fresh one is created', () => {
-    const comments = [{ id: 1, body: 'an unrelated comment' }];
+    const comments = [{ id: 1, body: 'an unrelated comment', user: HUMAN_AUTHOR }];
     expect(findMarkedCommentId(comments, MARKER)).toBeNull();
   });
 
   it('returns null on an empty comment list', () => {
     expect(findMarkedCommentId([], MARKER)).toBeNull();
+  });
+
+  it('does NOT match a marker planted in a comment authored by a human, so conductor never PATCHes it', () => {
+    // On pull_request_target with a write token, anyone who can comment on
+    // the pull request can plant the marker in a comment they author before
+    // conductor's first run. Matching on the marker alone would then have
+    // conductor repeatedly PATCH the attacker's own comment -- which they
+    // can edit afterward to display a forged clean report. Requiring the
+    // bot identity closes that: a human-authored comment carrying the
+    // marker is never matched, so conductor creates its own instead.
+    const comments = [
+      { id: 1, body: `${MARKER}\nforged clean report`, user: HUMAN_AUTHOR },
+    ];
+    expect(findMarkedCommentId(comments, MARKER)).toBeNull();
+  });
+
+  it('matches a marker in a comment authored by the GitHub Actions bot', () => {
+    const comments = [
+      { id: 4, body: `${MARKER}\nprior conductor report`, user: BOT_AUTHOR },
+    ];
+    expect(findMarkedCommentId(comments, MARKER)).toBe(4);
+  });
+
+  it('does not match a marked comment with no user field at all', () => {
+    const comments = [{ id: 5, body: `${MARKER}\nprior conductor report` }];
+    expect(findMarkedCommentId(comments, MARKER)).toBeNull();
   });
 });
 
@@ -91,9 +120,14 @@ describe('the gh argument vectors', () => {
     ]);
   });
 
-  it('creates a comment with the body read from a file, never interpolated', () => {
+  it('creates a comment with the body read from a file via -F, never -f', () => {
+    // gh's `@<path>` file-read form only works with -F/--field. -f/--raw-field
+    // sends the literal string, so `-f body=@/tmp/body.md` would post the
+    // literal text "@/tmp/body.md" as the comment body instead of the file's
+    // contents.
     const args = createCommentArgs('acme/widgets', 42, '/tmp/body.md');
-    expect(args).toEqual(['api', 'repos/acme/widgets/issues/42/comments', '-f', 'body=@/tmp/body.md']);
+    expect(args).toEqual(['api', 'repos/acme/widgets/issues/42/comments', '-F', 'body=@/tmp/body.md']);
+    expect(args).not.toContain('-f');
     // No element of the argument vector carries report-shaped prose: the only
     // way the body reaches gh is the @-file reference.
     for (const arg of args) {
@@ -101,16 +135,17 @@ describe('the gh argument vectors', () => {
     }
   });
 
-  it('updates the existing comment by id, also by file, with PATCH', () => {
+  it('updates the existing comment by id, also by file via -F, with PATCH', () => {
     const args = updateCommentArgs('acme/widgets', 2, '/tmp/body.md');
     expect(args).toEqual([
       'api',
       'repos/acme/widgets/issues/comments/2',
       '-X',
       'PATCH',
-      '-f',
+      '-F',
       'body=@/tmp/body.md',
     ]);
+    expect(args).not.toContain('-f');
   });
 });
 
@@ -168,7 +203,7 @@ describe('postReport', () => {
 
   it('updates the existing marked comment in place instead of creating a second one', () => {
     const { run, calls } = recordingRunner([
-      { stdout: JSON.stringify([{ id: 7, body: `${MARKER}\nold report` }]) },
+      { stdout: JSON.stringify([{ id: 7, body: `${MARKER}\nold report`, user: BOT_AUTHOR }]) },
       { stdout: '{}' },
     ]);
     const { writeBodyFile, writes } = recordingBodyWriter();
@@ -219,7 +254,7 @@ describe('postReport', () => {
 
   it('also degrades gracefully when the failure happens on the update path', () => {
     const { run } = recordingRunner([
-      { stdout: JSON.stringify([{ id: 7, body: `${MARKER}\nold report` }]) },
+      { stdout: JSON.stringify([{ id: 7, body: `${MARKER}\nold report`, user: BOT_AUTHOR }]) },
       new Error('HTTP 403: Resource not accessible by integration'),
     ]);
     const { writeBodyFile } = recordingBodyWriter();
@@ -234,5 +269,39 @@ describe('postReport', () => {
 
     expect(result.posted).toBe(false);
     expect(result.warning).toMatch(/could not post/i);
+  });
+
+  it('creates its own comment rather than adopting a marker an attacker planted in a human comment', () => {
+    // pull_request_target hands conductor's step a write token; anyone who
+    // can comment on the pull request can author a comment carrying the
+    // marker before conductor's own first run. If postReport matched on the
+    // marker alone it would PATCH that attacker-authored comment forever
+    // after, which the attacker can then edit to show a forged clean
+    // report. It must create its own comment instead.
+    const { run, calls } = recordingRunner([
+      {
+        stdout: JSON.stringify([
+          { id: 1, body: `${MARKER}\nforged clean report`, user: HUMAN_AUTHOR },
+        ]),
+      },
+      { stdout: JSON.stringify({ id: 99 }) },
+    ]);
+    const { writeBodyFile } = recordingBodyWriter();
+
+    const result = postReport({
+      run,
+      repo: 'acme/widgets',
+      pr: 42,
+      reportText: 'conductor: 1 gate blocked.',
+      writeBodyFile,
+    });
+
+    expect(result).toEqual({ posted: true, updated: false, commentId: 99 });
+    expect(calls[1]).toEqual([
+      'api',
+      'repos/acme/widgets/issues/42/comments',
+      '-F',
+      expect.stringMatching(/^body=@/),
+    ]);
   });
 });

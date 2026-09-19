@@ -50,16 +50,46 @@ export function buildCommentBody(reportText, marker = MARKER) {
 }
 
 /**
- * The id of the comment carrying the marker, or null when none does.
+ * The GitHub Actions bot's own identity on a comment the default
+ * `GITHUB_TOKEN` posts: `user.login` is `github-actions[bot]` and
+ * `user.type` is `Bot`. Both are checked, not just one, so a comment is
+ * only ever treated as conductor's own when it carries the exact identity
+ * conductor's own posts under.
+ */
+const BOT_LOGIN = 'github-actions[bot]';
+
+function isPostedByTheActionsBot(comment) {
+  const user = comment?.user;
+  return user?.type === 'Bot' && user?.login === BOT_LOGIN;
+}
+
+/**
+ * The id of the comment carrying the marker AND authored by the GitHub
+ * Actions bot, or null when no such comment exists.
  *
  * `comments` is the parsed JSON array `gh api .../issues/:pr/comments`
- * returns: each entry at minimum `{ id, body }`. Null means "no prior
- * conductor comment on this pull request", which is exactly the signal to
- * create one rather than update one.
+ * returns: each entry at minimum `{ id, body, user: { login, type } }`.
+ * Null means "no prior conductor comment on this pull request", which is
+ * exactly the signal to create one rather than update one.
+ *
+ * The bot-identity check matters most on `pull_request_target`, which hands
+ * this step a write token even though the pull request itself is
+ * untrusted: anyone who can comment on the pull request can plant the
+ * marker in a comment THEY author before conductor's first run. Matching on
+ * the marker alone would then have conductor repeatedly PATCH the
+ * attacker's own comment, which they can edit afterward to display a
+ * forged clean report. Requiring the marker AND the bot identity closes
+ * that: a marker in a human-authored comment is never matched, so
+ * conductor creates its own comment instead, exactly as if no marked
+ * comment existed at all.
  */
 export function findMarkedCommentId(comments, marker = MARKER) {
   for (const comment of comments ?? []) {
-    if (typeof comment?.body === 'string' && comment.body.includes(marker)) {
+    if (
+      typeof comment?.body === 'string' &&
+      comment.body.includes(marker) &&
+      isPostedByTheActionsBot(comment)
+    ) {
       return comment.id;
     }
   }
@@ -75,14 +105,21 @@ export function listCommentsArgs(repo, pr) {
  * Creates a new comment. `bodyFile` is a path; `gh api`'s `@file` value form
  * reads the body from it, which is what keeps the report out of the
  * argument vector.
+ *
+ * -F/--field, deliberately, never -f/--raw-field: gh's `@<path>` file-read
+ * form is only recognized by -F. -f sends the value as a literal string, so
+ * `-f body=@/tmp/x` would post the literal text "@/tmp/x" as the comment
+ * body instead of the file's contents, silently defeating both the report
+ * and the marker-based stickiness (the literal path carries no marker, so
+ * every run would create a new comment rather than updating one).
  */
 export function createCommentArgs(repo, pr, bodyFile) {
-  return ['api', `repos/${repo}/issues/${pr}/comments`, '-f', `body=@${bodyFile}`];
+  return ['api', `repos/${repo}/issues/${pr}/comments`, '-F', `body=@${bodyFile}`];
 }
 
-/** Updates an existing comment in place, also by file. */
+/** Updates an existing comment in place, also by file, also via -F. */
 export function updateCommentArgs(repo, commentId, bodyFile) {
-  return ['api', `repos/${repo}/issues/comments/${commentId}`, '-X', 'PATCH', '-f', `body=@${bodyFile}`];
+  return ['api', `repos/${repo}/issues/comments/${commentId}`, '-X', 'PATCH', '-F', `body=@${bodyFile}`];
 }
 
 /**

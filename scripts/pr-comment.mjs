@@ -51,8 +51,16 @@ export function parseArgs(argv) {
  * `{ stdout }` out, or a throw carrying `gh`'s own stderr. `gh` reads its
  * token from the `GH_TOKEN` (or `GITHUB_TOKEN`) environment variable itself,
  * so nothing here has to pass it on the command line.
+ *
+ * Exported so scripts/tests/pr-comment-smoke.test.mjs can drive a real `gh`
+ * binary through this exact seam. The unit test suite (pr-comment.test.mjs,
+ * pr-comment-cli.test.mjs) replaces `gh` with a shim that cannot tell
+ * `-f` from `-F`: both take a `key=value` string and neither shim reads the
+ * `@file` form, so a regression from -F back to -f would pass every offline
+ * test while breaking against a real `gh`. The smoke test is what actually
+ * exercises the real binary's own file-read behavior.
  */
-function ghRun(argv) {
+export function ghRun(argv) {
   const result = spawnSync('gh', argv, { encoding: 'utf8' });
   if (result.error) {
     throw result.error;
