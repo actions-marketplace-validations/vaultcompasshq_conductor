@@ -14,6 +14,22 @@ likely to be a version bump someone forgot to commit than a deliberate one.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-18
+
+**An action-only release. The tag moves; the npm package does not.**
+`@vaultcompass/conductor` stays at 0.4.0 on npm and the action's
+`conductor-version` default stays `0.4.0`.
+
+### Fixed
+
+- The release workflow's "Decide the release kind" step ran before
+  `Install dependencies`, but the classifier it runs imports the `yaml`
+  package. The v0.4.1 tag failed at that step with `Cannot find package
+  'yaml'` before it could decide anything: nothing was published and no
+  GitHub Release was created, which is the fail-closed outcome the workflow
+  is built for, but it also means v0.4.1 has no Release page. Install now
+  runs first. This tag carries everything v0.4.1 described below.
+
 ## [0.4.1] - 2026-09-18
 
 **An action-only release. The tag moves; the npm package does not.** Nothing in

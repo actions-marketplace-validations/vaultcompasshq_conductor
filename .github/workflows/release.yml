@@ -58,16 +58,26 @@ jobs:
         cache: 'pnpm'
         registry-url: 'https://registry.npmjs.org'
 
+    # The classifier below imports the yaml package, so node_modules has to
+    # exist before it runs. This is the only reason install sits above the
+    # release-kind step rather than with build and test: v0.4.1 was tagged
+    # with the install step further down, the classifier failed on a missing
+    # package before it could decide anything, and the run went red without
+    # publishing (correct, and useless). The pnpm store is cached by
+    # setup-node, so a refused tag still costs seconds here, not a build.
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
     # Ported from dep-guard, and placed here on purpose: everything above
     # this step can fail and be re-run harmlessly, and everything below it
     # cannot. A publish cannot be taken back, so a mistyped tag would
     # otherwise publish whatever version package.json happens to carry and
     # then describe it in a GitHub Release as though the two matched.
     #
-    # Nothing in this step depends on install, build, or test output: it
-    # reads package.json through "node -p" and talks to git directly, which
-    # is why it can run this early and cost about a minute rather than
-    # fifteen.
+    # Nothing in this step depends on build or test output: it reads
+    # package.json through "node -p", parses action.yml and CHANGELOG.md, and
+    # talks to git and the registry directly, which is why it runs before
+    # the build and refuses a bad tag in about a minute rather than fifteen.
     #
     # dep-guard's version of this step also asserts that its core and cli
     # packages carry the same version, and branches on GITHUB_REF_TYPE
@@ -144,9 +154,6 @@ jobs:
         fi
 
         echo "Version check passed: version=${VERSION} tag=${GITHUB_REF_NAME}, and the tagged commit is on main."
-
-    - name: Install dependencies
-      run: pnpm install --frozen-lockfile
 
     - name: Build
       run: pnpm build
