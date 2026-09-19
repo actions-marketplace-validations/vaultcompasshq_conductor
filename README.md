@@ -732,6 +732,52 @@ add; nothing here does that for you.
 
 Off by default, so an existing consumer of this action is unaffected.
 
+**The sticky match only ever adopts conductor's own comment.** On
+`pull_request_target` this step runs with a write token even though the
+pull request itself is untrusted, so anyone who can comment on the pull
+request could, in principle, author a comment carrying the same hidden
+marker before conductor's first run. The match requires the marker AND that
+the comment was authored by the GitHub Actions bot; a marker in anyone
+else's comment is never adopted, and conductor creates its own comment
+instead, exactly as if no marked comment existed.
+
+**Running this Action more than once against the same pull request** (for
+example, once per package in a monorepo) needs its own marker per run, or
+those runs fight over one shared comment. Set `pr-comment-marker` to a
+distinct string per invocation and each run stays sticky to its own
+comment; left unset (the default), every invocation uses the same built-in
+marker, which is the existing, unchanged behaviour for a single invocation
+per pull request.
+
+```yaml
+      - id: conductor-package-a
+        uses: ./
+        with:
+          pr-comment: true
+          pr-comment-marker: 'package-a'
+      - id: conductor-package-b
+        uses: ./
+        with:
+          pr-comment: true
+          pr-comment-marker: 'package-b'
+```
+
+**A note for anyone changing this surface, not for a consumer of the
+Action**: the comment body reaches `gh` with `-F body=@<file>` (`gh api`'s
+file-read form), never `-f`, which sends the value as a literal string
+instead of reading the file. The offline test suite
+(`scripts/tests/pr-comment.test.mjs`, `scripts/tests/pr-comment-cli.test.mjs`)
+replaces `gh` with a recorder or a shim, and neither can tell `-f` from `-F`
+apart, since both simply accept a `key=value` string and neither actually
+reads the `@file` form. `scripts/tests/pr-comment-smoke.test.mjs` is what
+actually proves the distinction, against a real `gh` binary; it is skipped
+by an ordinary offline `pnpm test` run and only runs with `GH_TOKEN` (or
+`GITHUB_TOKEN`), `CONDUCTOR_PR_COMMENT_SMOKE_REPO`, and
+`CONDUCTOR_PR_COMMENT_SMOKE_ISSUE` set. Run it for real against a scratch
+issue or pull request before any release that touches
+`scripts/lib/pr-comment.mjs` or `scripts/pr-comment.mjs`; the file itself
+documents the exact invocation.
+
 **The manual recipe below still has a reason to exist**: a non-sticky
 comment (one per run, never edited), a report you want to post yourself with
 different formatting, or a workflow that would rather not add

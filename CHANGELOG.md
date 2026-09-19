@@ -28,8 +28,23 @@ likely to be a version bump someone forgot to commit than a deliberate one.
   pull request is read-only regardless of the granted permission, so the post
   fails there; the step catches that, prints a `::warning::`, and continues
   rather than failing the job or changing the gate's own verdict. The report
-  reaches `gh` by file, never interpolated into a command line. See the
-  README's "The report as a pull request comment" section.
+  reaches `gh` by file, never interpolated into a command line, using `gh
+  api`'s `-F` (file-read) form rather than `-f` (literal-string), which
+  matters because they take the same `key=@path` shape and only one of them
+  reads the file. The sticky match requires the marker AND that the existing
+  comment was authored by the GitHub Actions bot, not the marker alone: on
+  `pull_request_target`, which hands this step a write token even though the
+  pull request is untrusted, anyone who can comment on the pull request
+  could otherwise plant the marker in their own comment ahead of conductor's
+  first run and have every later run silently PATCH it. An optional
+  `pr-comment-marker` input overrides the built-in marker, for a workflow
+  that runs this Action more than once against the same pull request (one
+  package in a monorepo per run); left unset, behaviour for a single
+  invocation is unchanged. See the README's "The report as a pull request
+  comment" section, including the note there on the real-`gh` smoke test
+  (`scripts/tests/pr-comment-smoke.test.mjs`) this surface needs before a
+  release, since the offline suite's `gh` shim cannot distinguish `-f` from
+  `-F`.
 
 ## [0.4.3] - 2026-09-18
 
