@@ -14,6 +14,73 @@ likely to be a version bump someone forgot to commit than a deliberate one.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-18
+
+**An action-only release. The tag moves; the npm package does not.**
+`@vaultcompass/conductor` stays at 0.4.0 on npm and the action's
+`conductor-version` default stays `0.4.0`. What moves is the intent gate the
+action installs.
+
+### Security
+
+- **On a pull request, the four `*-version` inputs may not pin BACKWARD.** The
+  validate step checked that each input is an exact version and nothing more,
+  which is not the control for version choice: on a same-repo `pull_request`
+  event GitHub runs the workflow file from the head, so those four pins are
+  written by the pull request being judged. Once a gate has two published
+  versions, a pull request could pin back to the release that predates the rule
+  which would have caught it, clear the shape check, and be judged by the rule
+  set it chose for itself. That is the same class of hole as an input that
+  turns pull-request mode off, which this action refuses to offer, except that
+  deleting a control reads as deleting a control while `intent-guard-version:
+  1.4.0` reads as ordinary version management.
+
+  Where `GITHUB_BASE_REF` is set, the step now refuses any of the four inputs
+  naming a version below the one this action tag ships, naming both numbers and
+  the fix, which is to remove the input. Pinning **forward** is still accepted
+  there, on an assumption the rule does not enforce: that a newer gate is at
+  least as strict. Forward pins are not bounded.
+
+  Each input has its own constant in `action.yml`, separate from
+  `TRUST_BASE_MIN_VERSION` in `src/gate-runner.ts` even where the numbers
+  agree. That floor is flag compatibility, the oldest build that understands
+  `--trust-base`; these are the tested versions this tag ships, and one
+  constant serving both is how raising one silently raises the other.
+
+  **Where it fires** is exactly where `GITHUB_BASE_REF` is set, which is
+  `pull_request` and `pull_request_target`. Push runs are out of scope and the
+  shape check stays their only version gate. That is a statement of scope, not
+  a safety argument: a push to an unprotected branch runs that branch's own
+  workflow file, written by the same author, and is as author-controlled as a
+  pull request. It is not covered.
+
+  **What this does not cover:** forks, where the base repository's workflow
+  file runs, so a fork author never writes the pins that judge them (the rule
+  still fires on a fork pull request and judges the base workflow's own pins,
+  so a deliberate backward pin there refuses every fork run); and a pull
+  request that deletes the step or moves the `uses:` pin, for which branch
+  protection with review required for `.github/workflows` remains the control.
+
+  **The cost today** is one refusal that is not hypothetical:
+  `intent-guard-version: 1.4.0` is published and below what this tag ships, so
+  a workflow carrying that pin now fails on a pull request until the line is
+  removed or raised.
+
+### Changed
+
+- **The `intent-guard-version` default moves from `1.4.0` to `1.5.2`.**
+  intent-guard 1.5.1 refused `--paths ''`, which is exactly what the umbrella
+  sends on a pull request whose change set is empty, so that version turns an
+  empty diff into a failed gate. 1.5.2 fixes it. **Never pin 1.5.1 here.** The
+  pull-request rule above measures `intent-guard-version` against 1.5.2 from
+  this tag on.
+
+  Unchanged, and deliberately: `TRUST_BASE_MIN_VERSION` in
+  `src/gate-runner.ts` and the "intent-guard from 1.4.0" line in the README
+  both stay at 1.4.0. Those are the floor at which intent-guard understands
+  `--trust-base`, which is a statement about a flag rather than about what this
+  tag ships, and 1.4.0 still understands it.
+
 ## [0.4.2] - 2026-09-18
 
 **An action-only release. The tag moves; the npm package does not.**

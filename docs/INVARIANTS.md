@@ -502,6 +502,96 @@ assertions keep the file from drifting away from the install, and are not
 themselves a security property. The stub is npm, so these prove the action ASKS; the counts
 above are what a real npm does.
 
+## On a pull request, no version input may pin BACKWARD
+
+New in the v0.4.3 action tag. The shape check above asks whether each of the
+four inputs is an exact version. It says nothing about WHICH one, and it is not
+the control for version choice. On a same-repo `pull_request` event GitHub runs
+the workflow file from the HEAD, so all four inputs are written by the pull
+request being judged. Once a gate has two published versions that is a bypass
+with an innocent shape: deleting a control reads as deleting a control, while
+`intent-guard-version: 1.4.0` reads as version management. It is not
+hypothetical here, because this tag ships intent-guard 1.5.2 and 1.4.0 is
+published.
+
+So where `GITHUB_BASE_REF` is non-empty the validate step refuses any of the
+four inputs naming a version BELOW the one this action tag ships, and accepts
+anything at or above it. Pinning FORWARD stays allowed, which is the direction
+the inputs exist for. That rests on an ASSUMPTION the rule does not enforce:
+that a newer gate is at least as strict. Nothing bounds a forward pin, so a
+version ahead of the tag's is accepted whatever its rules turn out to be.
+
+Five properties, each load-bearing:
+
+- `TAG_<GATE>_MAJOR/MINOR/PATCH` in `action.yml` are SEPARATE constants from any
+  flag floor, and must not be merged with one even where they hold the same
+  number. `TRUST_BASE_MIN_VERSION` in `src/gate-runner.ts` is FLAG
+  COMPATIBILITY: the oldest build of each gate that understands `--trust-base`.
+  These are the tested versions this TAG ships. One constant serving both is how
+  raising one silently raises the other. The two already disagree for
+  intent-guard: the floor is 1.4.0 and the tag ships 1.5.2.
+- The comparison is against those hardcoded constants, never against anything
+  derived from an input. An input looks identical whether a consumer pinned the
+  current version or the default supplied it, so the step cannot tell a pin from
+  a default; the constant is the only source of truth. It is trustworthy because
+  `action.yml` comes from the ref the consumer's workflow names, not from the
+  pull request's tree. That holds for `vaultcompasshq/conductor` at a ref and
+  NOT for a local-path reference, which reads `action.yml` out of the pull
+  request's own tree; this repository's own workflows reference it that way.
+- One comparison function, called four times. Four hand-written copies would be
+  four places for one to drift into a weaker shape, on a check where the weaker
+  shape is the failure.
+- The event test is `GITHUB_BASE_REF` being non-empty, the same one the run step
+  uses to decide whether to pass `--trust-base`, rather than a second detector
+  to keep in step. It rests on a PLATFORM GUARANTEE worth recording, because a
+  same-repo pull request's author writes the workflow file and the obvious
+  bypass is therefore `env: GITHUB_BASE_REF: ""` at job level: GitHub documents
+  that the default `GITHUB_*` and `RUNNER_*` variables cannot be overwritten and
+  that such an assignment is ignored
+  (https://docs.github.com/en/actions/reference/workflows-and-actions/variables).
+  That is also why the step reads the runner's own default variable rather than
+  declaring `GITHUB_BASE_REF` in its `env:` mapping.
+- Written accept-only-if, not refuse-if, for the same reason as the npm floor:
+  `[` exits 2 on a malformed or out-of-range comparison and an `if` reads 2 as
+  false, so a refuse-if shape turns an arithmetic error into permission.
+
+**What this does NOT cover, stated because the obvious summary is wider than the
+rule.** It closes pinning backward on a SAME-REPO pull request, and nothing
+else.
+
+- Not forks, and on forks the rule costs something rather than merely doing
+  nothing. A fork's `pull_request` run uses the BASE repository's workflow file,
+  so a fork author never writes the pins that judge them and there is no hole
+  there to close. But `GITHUB_BASE_REF` IS set on a fork pull request, so the
+  check fires anyway and judges the base repository's own trusted workflow file.
+  A maintainer's deliberate backward pin there fails EVERY fork pull-request
+  run: a false refusal, on a pin nobody untrusted wrote. The remedy is the same
+  as for any consumer, which is to remove the input.
+- Not a pull request that deletes the step, moves the `uses:` pin to an older
+  action tag, or edits the job away. Those are workflow-file edits, and the
+  control is branch protection on the base branch with review required for
+  `.github/workflows`. Nothing in `action.yml` can substitute for it, and this
+  entry claims no more than the rest of this file does about that boundary.
+- Not push events. The rule fires exactly where `GITHUB_BASE_REF` is set, which
+  is `pull_request` and `pull_request_target`; push runs are out of scope and
+  the shape check remains their only version gate. Read that as SCOPE, not as
+  safety: a push to an UNPROTECTED branch runs that branch's own workflow file,
+  written by the same author, with `GITHUB_BASE_REF` empty, so it is as
+  author-controlled as a pull request and the rule does not cover it.
+- Not the version the gates are compared against being right. The constants say
+  what this tag ships, not what is good.
+
+**Enforced by:** the `refuses a pull request that pins a gate backward` cases in
+`tests/action.test.ts`. Three of the four constants equal their input's default
+with nothing published between them, so those cases drive the real step text
+with one constant advanced a minor version, which is the action as it will be
+the day a newer gate ships, and assert the replacement matched, so deleting or
+renaming a constant turns them red. intent-guard needs no such copy: 1.4.0 is
+published and below what this tag ships, so the shipped step refuses it. Plus a
+drift case tying each constant to its input's default, a `1.10.0` case on the
+accepted side that a lexicographic comparison would refuse, and a text case
+pinning the accept-only-if shape and the event gate in order.
+
 ## The pull-request trust boundary: the rules come from the base ref
 
 New in 0.3.0. Every gate reads its own rules out of the repository it is

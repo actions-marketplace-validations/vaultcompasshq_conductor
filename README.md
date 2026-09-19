@@ -341,6 +341,15 @@ provide that for you. Only `pull_request_target` runs the base branch's copy
 of a workflow, and that event exposes the base's secrets to the pull
 request's code, which is the wrong trade for a gate over untrusted changes.
 
+One part of that is closed, and only one. Because the pins are written in a
+file the pull request controls, a pull request could otherwise pin a gate
+**backward** to a published version that predates the rule which would have
+caught it: an exact version, so the validate step's shape check accepts it,
+and a change that reads as ordinary version management. **On a pull request
+the action now refuses any of the four `*-version` inputs naming a version
+below the one the action tag ships.** Pinning forward is still accepted.
+See "The Action" below.
+
 So on a pull-request run a gate's program must be **outside the working tree**
 (on PATH, or an absolute `command:` elsewhere on the machine), or else meet
 **both** of these:
@@ -546,6 +555,27 @@ workspace, and prepends that bin directory to `PATH`, so the run step invokes
 is **unconditional**, on push and `pull_request` alike, so there is one code
 path rather than one that matters and one that nobody exercises.
 
+**On a pull request those four inputs may not pin backward.** The shape check
+asks whether an input is an exact version; it says nothing about which one, and
+on a `pull_request` event the workflow file comes from the head, so the pins are
+written by the pull request being judged. Once a gate has two published versions
+that is a bypass with an innocent shape: pin back to the release that predates
+the rule which would have caught the change, and the change picks the rules it
+is judged by. So where `GITHUB_BASE_REF` is set, the validate step refuses an
+input naming a version below the one the action tag ships, naming both numbers,
+and the fix is to **remove the input**: the default is that version. Pinning
+**forward** is still accepted, on an assumption the rule does not enforce, that
+a newer gate is at least as strict; nothing bounds how far forward you pin.
+
+Two things follow from that, stated because the summary is wider than the rule.
+It fires on fork pull requests too, where the base repository's workflow file is
+the one that runs, so a deliberate backward pin you wrote yourself will refuse
+every fork run until you remove it. And push runs are out of scope rather than
+safe: a push to an unprotected branch runs that branch's own workflow file,
+written by the same author. Neither this nor anything else in `action.yml`
+replaces branch protection with review required for `.github/workflows`, which
+is still the only control over a pull request that edits the workflow.
+
 `--ignore-scripts` is there because the step holds the job's token and the four
 things it installs decide whether a pull request may merge; without it every
 package in the resolved tree would run code on the runner. The step then runs
@@ -627,11 +657,13 @@ jobs:
           # request's own lockfile no longer does. They are only as protected
           # as this file is: require review on .github/workflows in your
           # branch protection. Bump them like any other pin, in a pull
-          # request of their own.
+          # request of their own. Forward only on a pull request: the action
+          # refuses a pin below what its tag ships, and the four lines can be
+          # left out entirely to take that tag's own versions.
           conductor-version: 0.4.0
           dep-guard-version: 0.6.0
           vault-guard-version: 1.7.0
-          intent-guard-version: 1.4.0
+          intent-guard-version: 1.5.2
       - uses: github/codeql-action/upload-sarif@v3
         # Always: the log is most worth having on the run that failed.
         if: always()
