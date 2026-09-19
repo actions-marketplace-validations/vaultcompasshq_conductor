@@ -275,12 +275,36 @@ function defaultVersionEnv(overrides: Record<string, string> = {}): Record<strin
   return { ...env, ...overrides };
 }
 
-function runValidate(overrides: Record<string, string> = {}) {
-  const result = spawnSync('bash', ['-c', validateScript], {
+/**
+ * Runs a validate script, which is the step's own text unless a caller hands
+ * over a modified copy.
+ *
+ * `extraEnv` is how the event is chosen. This harness builds the environment
+ * from scratch rather than evaluating the step's `env:` mapping, which it could
+ * not do anyway: the mapping holds `${{ }}` expressions that only Actions can
+ * resolve. So a harness that wants a pull-request run sets GITHUB_BASE_REF
+ * here; left out, the step sees the push shape, which is what every case
+ * written before the pull-request rule assumed. On a real runner that variable
+ * reaches the step because the step DECLARES it from `github.base_ref`, which
+ * the case named after that mapping asserts separately.
+ */
+function runValidateScript(
+  script: string,
+  overrides: Record<string, string> = {},
+  extraEnv: Record<string, string> = {},
+) {
+  const result = spawnSync('bash', ['-c', script], {
     encoding: 'utf8',
-    env: { PATH: process.env.PATH ?? '', ...defaultVersionEnv(overrides) },
+    env: { PATH: process.env.PATH ?? '', ...defaultVersionEnv(overrides), ...extraEnv },
   });
   return { status: result.status, stderr: result.stderr ?? '' };
+}
+
+function runValidate(
+  overrides: Record<string, string> = {},
+  extraEnv: Record<string, string> = {},
+) {
+  return runValidateScript(validateScript, overrides, extraEnv);
 }
 
 /**
@@ -458,7 +482,7 @@ describe('action.yml installs the gates without trusting them first', () => {
     // Naming a package that is not installed is the quiet case: the audit
     // skips it and still exits 0.
     expect(manifest.dependencies['@vaultcompass/vault-guard']).toBe('1.7.0');
-    expect(manifest.dependencies['@vaultcompass/intent-guard']).toBe('1.4.0');
+    expect(manifest.dependencies['@vaultcompass/intent-guard']).toBe('1.5.2');
     expect(manifest.dependencies['@vaultcompass/conductor']).toBe('0.4.0');
     expect(manifest.dependencies['@vaultcompass/dep-guard']).toBe('0.6.0');
   });
@@ -495,7 +519,7 @@ describe('action.yml installs the gates outside the tree', () => {
     expect(action.inputs?.['conductor-version']?.default).toBe('0.4.0');
     expect(action.inputs?.['dep-guard-version']?.default).toBe('0.6.0');
     expect(action.inputs?.['vault-guard-version']?.default).toBe('1.7.0');
-    expect(action.inputs?.['intent-guard-version']?.default).toBe('1.4.0');
+    expect(action.inputs?.['intent-guard-version']?.default).toBe('1.5.2');
   });
 
   it('accepts an exact version', () => {
@@ -542,7 +566,7 @@ describe('action.yml installs the gates outside the tree', () => {
       '@vaultcompass/conductor@0.4.0',
       '@vaultcompass/dep-guard@0.6.0',
       '@vaultcompass/vault-guard@1.7.0',
-      '@vaultcompass/intent-guard@1.4.0',
+      '@vaultcompass/intent-guard@1.5.2',
       'audit',
       'signatures',
     ]);
@@ -602,5 +626,306 @@ describe('action.yml installs the gates outside the tree', () => {
       expect(Object.values(stepEnv('validate'))).toContain(`\${{ inputs.${input} }}`);
       expect(Object.values(stepEnv('install'))).toContain(`\${{ inputs.${input} }}`);
     }
+  });
+
+  it('declares the pull-request test from the event payload, the same as the gates step', () => {
+    // NOT read as the runner's bare default variable. A step-level `env:` entry
+    // wins over a job-level one, and `github.base_ref` is resolved from the
+    // event payload rather than from anything the workflow author writes, so
+    // the obvious bypass -- `env: GITHUB_BASE_REF: ""` at job level, written by
+    // the same pull request that writes the pins -- cannot reach this step even
+    // if the platform's no-overwrite guarantee for default variables failed.
+    // The guarantee is the second line of defence, recorded in
+    // docs/INVARIANTS.md and not depended on here.
+    expect(stepEnv('validate').GITHUB_BASE_REF).toBe('${{ github.base_ref }}');
+    // One spelling across the file: the gates step decides whether to pass
+    // `--trust-base` off the same value, and two spellings of one event test
+    // are two things to keep in step.
+    expect(stepEnv('gates').GITHUB_BASE_REF).toBe(stepEnv('validate').GITHUB_BASE_REF);
+  });
+});
+
+/**
+ * On a pull request, none of the four version inputs may pin BACKWARD.
+ *
+ * The shape check above asks whether an input is an exact version. It says
+ * nothing about WHICH one, and on a same-repo pull_request event GitHub runs
+ * the workflow file from the head, so all four of these inputs are written by
+ * the pull request being judged.
+ */
+
+/** The constant prefix in the validate step that each input is measured against. */
+const TAG_CONSTANTS: Record<(typeof VERSION_INPUTS)[number], string> = {
+  'conductor-version': 'TAG_CONDUCTOR',
+  'dep-guard-version': 'TAG_DEP_GUARD',
+  'vault-guard-version': 'TAG_VAULT_GUARD',
+  'intent-guard-version': 'TAG_INTENT_GUARD',
+};
+
+// The components are READ OUT OF THE STEP rather than written down here. A copy
+// in this file would go on agreeing with itself after the action moved, which is
+// the one failure a drift guard cannot be allowed to have.
+function tagPart(prefix: string, part: 'MAJOR' | 'MINOR' | 'PATCH'): string {
+  const name = `${prefix}_${part}`;
+  const found = new RegExp(`^\\s*${name}=([0-9]+)$`, 'm').exec(validateScript);
+  expect([name, found === null]).toEqual([name, false]);
+  return (found as RegExpExecArray)[1];
+}
+
+function tagVersion(prefix: string): string {
+  return `${tagPart(prefix, 'MAJOR')}.${tagPart(prefix, 'MINOR')}.${tagPart(prefix, 'PATCH')}`;
+}
+
+/**
+ * One REAL published version of each gate, below what this tag ships.
+ *
+ * Every one of the four inputs has published versions under its constant, so
+ * the shipped step refuses real pins today and these cases can drive the
+ * unmodified step text. Counted off the registry on 2026-09-18: 6 conductor
+ * below 0.4.0 (0.2.0 through 0.3.0), 8 dep-guard below 0.6.0, 25 vault-guard
+ * below 1.7.0, 7 intent-guard below 1.5.2. Forty-six pins in all that a
+ * consumer could write today and this tag now refuses on a pull request.
+ *
+ * Each value here is a version somebody could really have pinned, not a number
+ * invented to be low. A raised constant leaves them valid, since they only have
+ * to sit BELOW it; a constant lowered under one of them turns these red, which
+ * is the right answer for a tag that no longer ships what the table assumes.
+ */
+const PUBLISHED_BELOW: Record<(typeof VERSION_INPUTS)[number], string> = {
+  'conductor-version': '0.3.0',
+  'dep-guard-version': '0.5.0',
+  'vault-guard-version': '1.6.0',
+  'intent-guard-version': '1.4.0',
+};
+
+/**
+ * The same step with ONE tag constant advanced by a minor version: the action
+ * as it will be the day a newer gate ships and this tag starts shipping it.
+ *
+ * This device exists to prove DRIFT-FORWARD behaviour, that the comparison
+ * follows the constant rather than a number frozen into this file, and NOT
+ * because the rule is otherwise unobservable: every one of the four inputs has
+ * real published versions below its constant (see PUBLISHED_BELOW), and the
+ * cases driving the UNMODIFIED step on those versions are in the describe
+ * block below.
+ *
+ * Advancing the constant is not a weakened program: every line of the check is
+ * the shipped one, only the number it measures against moves. The replacement
+ * is asserted to have MATCHED, so renaming or deleting the constant turns these
+ * red rather than quietly re-testing the unmodified step.
+ */
+function scriptWithFutureTag(prefix: string): string {
+  const future = validateScript.replace(
+    new RegExp(`^(\\s*)${prefix}_MINOR=([0-9]+)$`, 'm'),
+    (_all, indent: string, digits: string) => `${indent}${prefix}_MINOR=${Number(digits) + 1}`,
+  );
+  expect([prefix, future === validateScript]).toEqual([prefix, false]);
+  return future;
+}
+
+describe('action.yml refuses a pull request that pins a gate backward', () => {
+  it('refuses a version below the one this tag ships, for every one of the four', () => {
+    // THE HOLE THIS CLOSES. Once a gate has two published versions, a pull
+    // request can pin back to the one that predates the rule that would have
+    // caught it, clear the shape check, and be judged by the rule set it chose
+    // for itself. The action already refuses to offer an input that turns
+    // pull-request mode off, for exactly this reason; the difference is that
+    // deleting a control reads as deleting a control, while a version pin reads
+    // as ordinary version management.
+    for (const input of VERSION_INPUTS) {
+      const prefix = TAG_CONSTANTS[input];
+      const shipped = tagVersion(prefix);
+      const run = runValidateScript(scriptWithFutureTag(prefix), {}, { GITHUB_BASE_REF: 'main' });
+      expect([input, run.status]).not.toEqual([input, 0]);
+      // The input by name: three other pins are in the same message's reach and
+      // a refusal that does not say which one is wrong sends the reader looking.
+      expect(run.stderr).toContain(input);
+      // BOTH numbers, for the same reason the npm floor names both: what was
+      // asked for, and what would have been accepted.
+      expect(run.stderr).toContain(shipped);
+      expect(run.stderr).toContain('pull request');
+      // And the remedy, which is to stop pinning at all.
+      expect(run.stderr).toContain('REMOVE the input');
+    }
+  });
+
+  it('refuses a real published version of every one of the four, on the shipped step', () => {
+    // THE UNMODIFIED STEP, on pins a consumer could write this morning. The
+    // future-copy cases above prove the comparison follows the constant; these
+    // prove the shipped file refuses something real, for all four inputs and
+    // not only for intent-guard.
+    for (const input of VERSION_INPUTS) {
+      const asked = PUBLISHED_BELOW[input];
+      const shipped = tagVersion(TAG_CONSTANTS[input]);
+      const run = runValidate({ [VERSION_VARS[input]]: asked }, { GITHUB_BASE_REF: 'main' });
+      expect([input, asked, run.status]).toEqual([input, asked, 1]);
+      // The input by name, since three other pins are in the same message's
+      // reach and a refusal that does not say which one sends the reader
+      // looking.
+      expect(run.stderr).toContain(input);
+      // BOTH numbers: what was asked for, and what would have been accepted.
+      expect(run.stderr).toContain(asked);
+      expect(run.stderr).toContain(shipped);
+      expect(run.stderr).toContain('REMOVE the input');
+      // And only on a pull request. The same published pin is accepted with
+      // GITHUB_BASE_REF unset, which is the SCOPE of the rule rather than a
+      // claim that a push run is safe.
+      const push = runValidate({ [VERSION_VARS[input]]: asked }, {});
+      expect([input, asked, push.status]).toEqual([input, asked, 0]);
+    }
+  });
+
+  it('checks each input against its own constant, not against one shared number', () => {
+    // Advancing ONE constant must refuse ONE input. A single constant serving
+    // all four, or a loop that reads the wrong pair, would name the others too.
+    const run = runValidateScript(
+      scriptWithFutureTag('TAG_VAULT_GUARD'),
+      {},
+      { GITHUB_BASE_REF: 'main' },
+    );
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain('vault-guard-version');
+    expect(run.stderr).not.toContain('conductor-version');
+    expect(run.stderr).not.toContain('dep-guard-version');
+    expect(run.stderr).not.toContain('intent-guard-version');
+  });
+
+  it('reports every backward pin before exiting, like the shape check above it', () => {
+    // Two bad pins should not need two runs to learn about.
+    const run = runValidate(
+      { INTENT_GUARD_VERSION: '1.4.0', VAULT_GUARD_VERSION: '1.6.0' },
+      { GITHUB_BASE_REF: 'main' },
+    );
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('intent-guard-version');
+    expect(run.stderr).toContain('vault-guard-version');
+  });
+
+  it('refuses the intent-guard version that shipped before this tag', () => {
+    // Not hypothetical, and not reached through a modified copy: 1.4.0 is the
+    // default this tag replaces, it is published, and a pull request asking for
+    // it is asking to be judged by the gate that refuses `--paths ""`.
+    const run = runValidate({ INTENT_GUARD_VERSION: '1.4.0' }, { GITHUB_BASE_REF: 'main' });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('1.4.0');
+    expect(run.stderr).toContain('1.5.2');
+  });
+
+  it('leaves push runs alone, where GITHUB_BASE_REF is not set', () => {
+    // The event test is GITHUB_BASE_REF being non-empty, which is exactly how
+    // the run step decides to pass `--trust-base`. With it unset the same low
+    // pins are accepted. That is SCOPE, not a safety argument: a push to an
+    // unprotected branch runs that branch's own workflow file, written by the
+    // same author, and this rule does not cover it.
+    for (const input of VERSION_INPUTS) {
+      const push = runValidateScript(scriptWithFutureTag(TAG_CONSTANTS[input]), {}, {});
+      expect([input, push.status]).toEqual([input, 0]);
+    }
+    expect(runValidate({ INTENT_GUARD_VERSION: '1.4.0' }, {}).status).toBe(0);
+    // An empty value is what Actions itself sets outside a pull request, and it
+    // has to read the same as unset or every push build goes red.
+    expect(runValidate({ INTENT_GUARD_VERSION: '1.4.0' }, { GITHUB_BASE_REF: '' }).status).toBe(0);
+  });
+
+  it('accepts the four versions this tag actually ships, on a pull request', () => {
+    // Against the REAL step, not a future copy: the shipped defaults have to
+    // pass on a pull-request run, or every consumer's pull request goes red the
+    // day this lands.
+    expect(runValidate({}, { GITHUB_BASE_REF: 'main' }).status).toBe(0);
+    for (const input of VERSION_INPUTS) {
+      const explicit = { [VERSION_VARS[input]]: tagVersion(TAG_CONSTANTS[input]) };
+      expect([input, runValidate(explicit, { GITHUB_BASE_REF: 'main' }).status]).toEqual([input, 0]);
+    }
+  });
+
+  it('allows pinning forward on a pull request, and orders numerically', () => {
+    // Pinning FORWARD stays allowed, on an assumption this rule does not
+    // enforce: that a newer gate is at least as strict. Forward pins are not
+    // bounded.
+    //
+    // The `.10.` values are the ones a lexicographic comparison gets wrong:
+    // `1.10.0` sorts BELOW `1.5.2` as text and above it as a version, and
+    // refusing it would refuse the very direction this rule leaves open.
+    const forward: Array<[string, string]> = [
+      ['INTENT_GUARD_VERSION', '1.5.3'],
+      ['INTENT_GUARD_VERSION', '1.6.0'],
+      ['INTENT_GUARD_VERSION', '1.10.0'],
+      ['INTENT_GUARD_VERSION', '2.0.0'],
+      ['INTENT_GUARD_VERSION', '10.0.0'],
+      ['DEP_GUARD_VERSION', '0.6.1'],
+      ['DEP_GUARD_VERSION', '0.10.0'],
+      ['VAULT_GUARD_VERSION', '1.7.1'],
+      ['VAULT_GUARD_VERSION', '1.10.0'],
+      ['CONDUCTOR_VERSION', '0.4.1'],
+      ['CONDUCTOR_VERSION', '0.10.0'],
+    ];
+    for (const [variable, value] of forward) {
+      const run = runValidate({ [variable]: value }, { GITHUB_BASE_REF: 'main' });
+      expect([variable, value, run.status]).toEqual([variable, value, 0]);
+    }
+  });
+
+  it('lets the shape check answer first for a value that is not a version', () => {
+    // Two checks, deliberately, and the order decides which message a reader
+    // gets. `latest` is not a backward pin, it is not a version at all, and the
+    // useful answer says so rather than lecturing about pull requests.
+    const run = runValidate({ INTENT_GUARD_VERSION: 'latest' }, { GITHUB_BASE_REF: 'main' });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toMatch(/must be an exact version/);
+    expect(run.stderr).not.toContain('REMOVE the input');
+  });
+
+  it('keeps each tag constant and its input default one number', () => {
+    // THE DRIFT GUARD, and the most important case here. The constant the rule
+    // measures against and the default the action ships have to say the same
+    // thing. Let them drift and the rule measures against a version this tag
+    // does not install: a constant left BEHIND the default goes on admitting
+    // the pin it exists to refuse, and does it quietly.
+    for (const input of VERSION_INPUTS) {
+      expect([input, tagVersion(TAG_CONSTANTS[input])]).toEqual([
+        input,
+        String(action.inputs?.[input]?.default ?? ''),
+      ]);
+    }
+  });
+
+  it('writes the check accept-only-if, gated on the event, after the shape check', () => {
+    // Stated as text because behaviour cannot see a check that is not there,
+    // and because the FAILURE DIRECTION is the point. `[` exits 2 on a
+    // malformed comparison and an `if` reads 2 as false, so a refuse-if shape
+    // turns an arithmetic error into permission, on the one check whose whole
+    // job is to refuse. The flag therefore starts at 0 and is only raised by a
+    // comparison that succeeded.
+    //
+    // Comment lines are stripped first, the same as every other text rule in
+    // this file: the step explains this at length, and a rule that fired on the
+    // explanation would push the explanation out of the file.
+    const code = validateScript
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('#'))
+      .join('\n');
+    const shapeAt = code.indexOf('SEMVER=');
+    const initAt = code.indexOf('pin_ok=0');
+    const raiseAt = code.indexOf('pin_ok=1');
+    const verdictAt = code.indexOf('"$pin_ok" -eq 1');
+    const gateAt = code.indexOf('-n "${GITHUB_BASE_REF:-}"');
+    const callAt = code.indexOf('check_pin conductor-version');
+    const exitAt = code.indexOf('"$pin_status" -ne 0');
+    expect([shapeAt, initAt, raiseAt, verdictAt, gateAt, callAt, exitAt].every((at) => at !== -1))
+      .toBe(true);
+    // The flag starts at 0, is only ever raised by a comparison that succeeded,
+    // and is read last. An error on the way leaves it at 0 and the step
+    // refuses.
+    expect(raiseAt).toBeGreaterThan(initAt);
+    expect(verdictAt).toBeGreaterThan(raiseAt);
+    // And the whole thing runs on one event only, after the shape check. No
+    // call is reachable before the gate: a check_pin above it would fire on
+    // every push build.
+    expect(gateAt).toBeGreaterThan(shapeAt);
+    expect(callAt).toBeGreaterThan(gateAt);
+    expect(exitAt).toBeGreaterThan(callAt);
+    expect(code.slice(0, gateAt)).not.toMatch(/^\s*check_pin /m);
+    // Compared component by component, never as text.
+    expect(code).not.toMatch(/"\$pin_value" *[<>]/);
   });
 });

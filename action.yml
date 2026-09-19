@@ -69,7 +69,7 @@ inputs:
     description: >-
       The exact version of the intent gate this action installs. Same rule as
       conductor-version.
-    default: 1.4.0
+    default: 1.5.2
 
 outputs:
   sarif:
@@ -119,6 +119,11 @@ runs:
         DEP_GUARD_VERSION: ${{ inputs.dep-guard-version }}
         VAULT_GUARD_VERSION: ${{ inputs.vault-guard-version }}
         INTENT_GUARD_VERSION: ${{ inputs.intent-guard-version }}
+        # The pull-request test, taken from the EVENT PAYLOAD rather than from
+        # whatever environment the job happens to hand this step. Same spelling
+        # as the gates step below, which reads the same value for the same
+        # event. See the comment on the gate itself for why it is declared.
+        GITHUB_BASE_REF: ${{ github.base_ref }}
       run: |
         set -eu
 
@@ -145,6 +150,156 @@ runs:
         if [ "$status" -ne 0 ]; then
           echo "A range, a dist-tag such as latest, or anything else is refused. The versions that judge a pull request are pinned in the workflow file, so that the choice of program is a decision written down there and not one the registry makes on the morning of the run." >&2
           exit 1
+        fi
+
+        # A SECOND CHECK, ON ONE EVENT ONLY: on a pull request, none of the
+        # four inputs may ask for a version OLDER than the one this action tag
+        # ships.
+        #
+        # THE HOLE. The check above asks whether an input is an exact version.
+        # It says nothing about WHICH one. On a same-repo pull_request event
+        # GitHub runs the workflow file from the HEAD, so all four of these
+        # inputs are written by the pull request being judged, and the moment a
+        # gate has two published versions a pull request can pin back to the
+        # one that predates the rule that would have caught it, clear the shape
+        # check, and be judged by the rule set it chose for itself. That is not
+        # hypothetical, and not only for one input: EVERY ONE of the four has
+        # published versions below its constant here. Counted from the registry
+        # on 2026-09-18, 46 of them: conductor 0.2.0 through 0.3.0 is 6 below
+        # 0.4.0, dep-guard 8 below 0.6.0, vault-guard 25 below 1.7.0, and
+        # intent-guard 7 below 1.5.2, intent-guard 1.4.0 among them.
+        #
+        # This is the same class of hole as an input that turns pull-request
+        # mode off, which the trust-base input above refuses to offer for
+        # exactly this reason. The difference is what a reviewer sees: deleting
+        # a control reads as deleting a control, while a line reading
+        # intent-guard-version: 1.4.0 reads as ordinary version management.
+        #
+        # FORWARD STAYS ALLOWED, ON AN ASSUMPTION THIS RULE DOES NOT ENFORCE.
+        # The rule assumes a newer gate is at least as strict as the one this
+        # tag ships. Nothing here checks that, and forward pins are not
+        # bounded: any higher version is accepted, including one that does not
+        # exist yet and one whose rules turn out to be weaker. The four inputs
+        # exist so a consumer can pin forward. Only the backward direction, on
+        # the one event where the workflow file is written by the side under
+        # judgment, is refused.
+        #
+        # SEPARATE CONSTANTS FROM ANY FLAG FLOOR, and the two must not be
+        # merged even where they hold the same number. TRUST_BASE_MIN_VERSION
+        # in src/gate-runner.ts is FLAG COMPATIBILITY: the oldest build of each
+        # gate that understands --trust-base, raised in the commit that starts
+        # passing a newer flag. These are THE TESTED VERSIONS THIS TAG SHIPS,
+        # and they move with the pins above. One constant serving both is how
+        # raising one silently raises the other. They already disagree:
+        # intent-guard's floor is 1.4.0 and this tag ships 1.5.2.
+        #
+        # COMPARED AGAINST THESE HARDCODED CONSTANTS, never against anything
+        # derived from an input. An input looks identical whether the consumer
+        # pinned the current version or the default supplied it, so the step
+        # cannot tell a pin from a default, and the constant is the only source
+        # of truth. It is safe to trust because action.yml comes from the ref
+        # the consumer's workflow names, not from the pull request's tree.
+        #
+        # THAT HOLDS WHEN THE CONSUMER NAMES THIS ACTION BY OWNER AND REF, as
+        # vaultcompasshq/conductor at a tag. A LOCAL-PATH reference instead,
+        # the ./ form, reads action.yml out of the pull request's OWN tree, so
+        # these constants are author-controlled there and this rule protects
+        # nothing. This repository's own workflows reference it that way, which
+        # is the usual reason to.
+        TAG_CONDUCTOR_MAJOR=0
+        TAG_CONDUCTOR_MINOR=4
+        TAG_CONDUCTOR_PATCH=0
+        TAG_DEP_GUARD_MAJOR=0
+        TAG_DEP_GUARD_MINOR=6
+        TAG_DEP_GUARD_PATCH=0
+        TAG_VAULT_GUARD_MAJOR=1
+        TAG_VAULT_GUARD_MINOR=7
+        TAG_VAULT_GUARD_PATCH=0
+        TAG_INTENT_GUARD_MAJOR=1
+        TAG_INTENT_GUARD_MINOR=5
+        TAG_INTENT_GUARD_PATCH=2
+
+        # ONE COMPARISON, CALLED FOUR TIMES. Four hand-written copies would be
+        # four places for one to drift into a weaker shape, on a check where
+        # the weaker shape is the whole failure.
+        #
+        # WRITTEN AS "ACCEPT ONLY IF PROVABLY NEW ENOUGH", NOT "REFUSE IF
+        # OLD", the same shape and for the same reason as the npm floor in the
+        # install step. `[` exits 2 on a malformed or out-of-range comparison
+        # and an `if` reads that 2 as false, so a refuse-if shape turns an
+        # arithmetic error into permission, on the one check whose entire job
+        # is to refuse. Here an error leaves pin_ok at 0 and the step refuses,
+        # so the direction of failure is closed by construction rather than by
+        # getting every expression right.
+        #
+        # Component by component, never as text: 1.10.0 sorts BELOW 1.5.2 as a
+        # string and above it as a version, so a lexicographic check would
+        # refuse the forward pin this rule deliberately leaves open.
+        pin_not_backward() {
+          pin_value="$1"
+          tag_major="$2"
+          tag_minor="$3"
+          tag_patch="$4"
+          pin_major="${pin_value%%.*}"
+          pin_rest="${pin_value#*.}"
+          pin_minor="${pin_rest%%.*}"
+          pin_patch="${pin_rest#*.}"
+          pin_ok=0
+          if [ "$pin_major" -gt "$tag_major" ] 2>/dev/null; then
+            pin_ok=1
+          elif [ "$pin_major" -eq "$tag_major" ] 2>/dev/null; then
+            if [ "$pin_minor" -gt "$tag_minor" ] 2>/dev/null; then
+              pin_ok=1
+            elif [ "$pin_minor" -eq "$tag_minor" ] 2>/dev/null && [ "$pin_patch" -ge "$tag_patch" ] 2>/dev/null; then
+              pin_ok=1
+            fi
+          fi
+          [ "$pin_ok" -eq 1 ]
+        }
+
+        # Reports and records, so that all four are reported before exiting,
+        # the same as the shape check above: a workflow with two backward pins
+        # should not need two runs to learn about the second one.
+        check_pin() {
+          if pin_not_backward "$2" "$3" "$4" "$5"; then
+            return 0
+          fi
+          printf 'conductor: on a pull request the %s input may not ask for a version older than the one this action tag ships. It asks for %s, and this tag ships %s.%s.%s.\n' \
+            "$1" "$2" "$3" "$4" "$5" >&2
+          pin_status=1
+        }
+
+        # GITHUB_BASE_REF BEING NON-EMPTY IS THE PULL-REQUEST TEST, and it is
+        # the same one the run step uses to decide whether to pass
+        # --trust-base. A second detector for the same event would be a second
+        # thing to keep in step. Actions defines the variable and leaves it
+        # EMPTY outside a pull request, so empty has to read as "not a pull
+        # request" here exactly as it does there.
+        #
+        # DECLARED IN THIS STEP'S ENV MAPPING, from the github.base_ref
+        # expression, so the value cannot come from the workflow file even if
+        # the platform guarantee failed. (Written without the expression
+        # delimiters on purpose: an expression inside a run block is expanded
+        # by Actions, comment or not.) The obvious bypass is a job-level
+        # env: GITHUB_BASE_REF: "", written by the same pull request that
+        # writes the pins. A step-level env entry wins over a job-level one,
+        # and github.base_ref is read out of the event payload rather than out
+        # of anything the workflow author writes, so the declared form closes
+        # that bypass on its own. The platform guarantee that the default
+        # GITHUB_ and RUNNER_ variables cannot be overwritten is the SECOND
+        # line of defence and is recorded in docs/INVARIANTS.md; this step does
+        # not depend on it.
+        if [ -n "${GITHUB_BASE_REF:-}" ]; then
+          pin_status=0
+          check_pin conductor-version "$CONDUCTOR_VERSION" "$TAG_CONDUCTOR_MAJOR" "$TAG_CONDUCTOR_MINOR" "$TAG_CONDUCTOR_PATCH"
+          check_pin dep-guard-version "$DEP_GUARD_VERSION" "$TAG_DEP_GUARD_MAJOR" "$TAG_DEP_GUARD_MINOR" "$TAG_DEP_GUARD_PATCH"
+          check_pin vault-guard-version "$VAULT_GUARD_VERSION" "$TAG_VAULT_GUARD_MAJOR" "$TAG_VAULT_GUARD_MINOR" "$TAG_VAULT_GUARD_PATCH"
+          check_pin intent-guard-version "$INTENT_GUARD_VERSION" "$TAG_INTENT_GUARD_MAJOR" "$TAG_INTENT_GUARD_MINOR" "$TAG_INTENT_GUARD_PATCH"
+          if [ "$pin_status" -ne 0 ]; then
+            echo "On a same-repo pull_request event GitHub runs the workflow file from the pull request head, so on that event this file belongs to the pull request. An older gate here would let a change choose the rules it is judged by." >&2
+            echo "REMOVE the input and this cannot happen: the default is the version this action tag ships. Pinning FORWARD is still accepted on a pull request, on the assumption that a newer gate is at least as strict; the rule does not bound how far forward you pin." >&2
+            exit 1
+          fi
         fi
 
     # UNCONDITIONAL, on push and on pull_request alike, so there is one code
