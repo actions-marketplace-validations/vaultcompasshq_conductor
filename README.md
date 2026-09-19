@@ -691,6 +691,53 @@ workflows do.
 
 ### The report as a pull request comment
 
+**Built in, opt-in.** This matters most for an advisory job: a `pull_request`
+check that is not marked required does not block anything when it fails, and
+without a comment its findings live only in the job's exit code and log,
+which teaches a developer nothing. Set `pr-comment: true` on the Action's own
+step and add `pull-requests: write` to the job's `permissions`:
+
+```yaml
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    steps:
+      # ... checkout, pnpm, setup-node, install, as in the example above ...
+      - id: conductor
+        uses: ./
+        with:
+          output: conductor.sarif
+          pr-comment: true
+```
+
+That posts conductor's own text report, the one the README quotes above
+("conductor: clean, nothing blocked. 2 gate(s) ran: ..."), as a comment on
+the pull request. It is **sticky**: a hidden marker in the comment body lets
+a re-run find and update that same comment, so a push does not pile up a new
+comment every time, the way the manual recipe below does. It runs on a
+`pull_request` or `pull_request_target` event only, and it runs whether the
+gates step passed or failed, since a blocking run is the one an advisory
+check most needs a developer to actually see.
+
+**It is a no-op on a pull request from a fork.** The default `GITHUB_TOKEN`
+there is read-only regardless of the `pull-requests: write` permission you
+grant, so the post fails; the step catches that, prints a `::warning::`
+naming the likely cause, and continues. The gate's own pass/fail is decided
+entirely by the earlier "Run the gates" step and never depends on whether
+the comment posted, on a fork or anywhere else. `pull_request_target` runs
+with a writable token and the base repository's own workflow instead, which
+is a different security decision to take on purpose rather than a flag to
+add; nothing here does that for you.
+
+Off by default, so an existing consumer of this action is unaffected.
+
+**The manual recipe below still has a reason to exist**: a non-sticky
+comment (one per run, never edited), a report you want to post yourself with
+different formatting, or a workflow that would rather not add
+`pull-requests: write` to the same job the gates run in. For the common
+case, `pr-comment: true` is the built-in answer.
+
 The SARIF upload produces no alerts on a private repository without GitHub
 Code Security, which is why that step carries `continue-on-error`. A comment
 is free there. Add `pull-requests: write` to the job's `permissions` and this

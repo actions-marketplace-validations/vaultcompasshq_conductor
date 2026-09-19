@@ -14,6 +14,23 @@ likely to be a version bump someone forgot to commit than a deliberate one.
 
 ## [Unreleased]
 
+### Added
+
+- **A `pr-comment` opt-in input on the Action**, for an advisory
+  (non-required) run whose findings would otherwise live only in the job's
+  exit code and log. Set to exactly `"true"` (default `"false"`, so an
+  existing consumer is unaffected), it posts conductor's own text report as a
+  pull request comment, only on a `pull_request` or `pull_request_target`
+  event and only with `permissions: pull-requests: write` granted on the
+  calling job. The comment is **sticky**: a hidden marker in the body lets a
+  re-run find and update that same comment rather than adding a new one every
+  push. **Fork-safe by construction**: the default `GITHUB_TOKEN` on a fork
+  pull request is read-only regardless of the granted permission, so the post
+  fails there; the step catches that, prints a `::warning::`, and continues
+  rather than failing the job or changing the gate's own verdict. The report
+  reaches `gh` by file, never interpolated into a command line. See the
+  README's "The report as a pull request comment" section.
+
 ## [0.4.3] - 2026-09-18
 
 **An action-only release. The tag moves; the npm package does not.**

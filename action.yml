@@ -70,6 +70,21 @@ inputs:
       The exact version of the intent gate this action installs. Same rule as
       conductor-version.
     default: 1.5.2
+  pr-comment:
+    description: >-
+      Set to exactly "true" to post conductor's own text report as a pull
+      request comment, for an advisory (non-required) run whose findings
+      would otherwise live only in the job's exit code and log. Off by
+      default, so an existing consumer is unaffected; this is opt-in.
+      Only fires on a pull_request or pull_request_target event. STICKY: a
+      hidden marker in the comment body lets a re-run find and update the
+      same comment rather than adding a new one every push. Needs
+      `permissions: pull-requests: write` on the calling job, or the write
+      fails; it is also a no-op on a pull request from a fork, where the
+      default GITHUB_TOKEN is read-only regardless of that permission. Either
+      way the posting step warns and continues rather than failing the job:
+      the gate's own pass/fail never depends on whether the comment posted.
+    default: 'false'
 
 outputs:
   sarif:
@@ -576,3 +591,83 @@ runs:
         # by the head's own lockfile, and running it would let a pull request
         # choose the program that judges it.
         conductor "${ARGS[@]}"
+
+    # OPT-IN, and OFF by an existing consumer's default. The README's own
+    # manual recipe ("The report as a pull request comment") already shows
+    # how to do this by hand: a second run of the gates in --format text,
+    # piped to `gh pr comment`. This step is the same idea, built in, made
+    # STICKY across re-runs with a hidden marker, and made FORK-SAFE: a
+    # posting failure warns and never fails the job.
+    #
+    # always(): composite-action steps stop after a failing prior step, and
+    # the gates step above is exactly the one that fails on a blocking
+    # finding. An advisory run's whole point is that a developer sees the
+    # finding, which is truest on the run that failed, so this step has to
+    # run then too. Nothing this step does can change the gates step's own
+    # exit code, which composite actions carry through in the failed-step
+    # shape regardless of what a later step does.
+    - name: Comment the report on the pull request
+      id: pr-comment
+      if: |
+        always() &&
+        inputs.pr-comment == 'true' &&
+        (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        # gh reads its token from GH_TOKEN itself; nothing here puts it on a
+        # command line. github.token is read-only on a fork pull_request,
+        # which is what makes the posting step below fail there -- see
+        # scripts/pr-comment.mjs, which turns that failure into a warning
+        # rather than letting it propagate.
+        GH_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        # The same four inputs the gates step reads, so this run can mirror
+        # it exactly. Read as variables rather than expanded into the
+        # script, the same as every other input in this file.
+        BASE_REF: ${{ inputs.base-ref }}
+        TRUST_BASE: ${{ inputs.trust-base }}
+        SPEC: ${{ inputs.spec }}
+        STAGE: ${{ inputs.stage }}
+        GITHUB_BASE_REF: ${{ github.base_ref }}
+        # The bundled script lives in THIS action's own tree, not the
+        # consumer's checkout, so it is reached by github.action_path rather
+        # than by a path relative to working-directory.
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -eu
+
+        # A SECOND RUN OF THE GATES, purely to render the text report. The
+        # gates step above already wrote the verdict as SARIF; conductor has
+        # one format per run, so getting the human-readable report this
+        # action already documents (the README's own "conductor: clean,
+        # nothing blocked..." line) means asking again. `|| true`,
+        # deliberately: a blocking finding is this run's non-zero exit, and
+        # that verdict belongs to the gates step, not to this one.
+        REPORT_FILE="$(mktemp)"
+        ARGS=(run --stage "$STAGE" --format text --verbose --output "$REPORT_FILE")
+        if [ -n "$BASE_REF" ]; then
+          ARGS+=(--base "$BASE_REF")
+        fi
+        if [ -n "$TRUST_BASE" ]; then
+          ARGS+=(--trust-base "$TRUST_BASE")
+        elif [ -n "${GITHUB_BASE_REF:-}" ]; then
+          ARGS+=(--trust-base "origin/$GITHUB_BASE_REF")
+        fi
+        if [ -n "$SPEC" ]; then
+          ARGS+=(--spec "$SPEC")
+        fi
+        conductor "${ARGS[@]}" || true
+
+        # The report reaches the poster BY FILE PATH, never by interpolating
+        # its bytes into a command: it is conductor's own output, but it can
+        # carry a finding's text or a path taken from the scanned repository,
+        # and neither belongs on a command line. scripts/pr-comment.mjs reads
+        # it, wraps it in a fenced block behind a hidden sticky marker, and
+        # never exits non-zero: a posting failure -- most commonly a fork
+        # pull_request's read-only token -- prints a ::warning:: and returns.
+        node "$ACTION_PATH/scripts/pr-comment.mjs" \
+          --report "$REPORT_FILE" \
+          --pr "$PR_NUMBER" \
+          --repo "$GITHUB_REPOSITORY"
