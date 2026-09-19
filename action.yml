@@ -85,6 +85,15 @@ inputs:
       way the posting step warns and continues rather than failing the job:
       the gate's own pass/fail never depends on whether the comment posted.
     default: 'false'
+  pr-comment-marker:
+    description: >-
+      Overrides the hidden marker that makes the pull request comment
+      sticky. Only useful when this action runs more than once against the
+      same pull request in one workflow, for example once per package in a
+      monorepo: without a distinct marker per run, those runs would fight
+      over one shared comment. Leave it empty (the default) and the built-in
+      marker is used, which keeps existing behaviour unchanged.
+    default: ''
 
 outputs:
   sarif:
@@ -635,6 +644,11 @@ runs:
         # consumer's checkout, so it is reached by github.action_path rather
         # than by a path relative to working-directory.
         ACTION_PATH: ${{ github.action_path }}
+        # Empty by default. Only worth setting when this action runs more
+        # than once against the same pull request in one workflow (a
+        # monorepo running it per package), so each run's comment stays its
+        # own rather than fighting over one.
+        PR_COMMENT_MARKER: ${{ inputs.pr-comment-marker }}
       run: |
         set -eu
 
@@ -645,7 +659,18 @@ runs:
         # nothing blocked..." line) means asking again. `|| true`,
         # deliberately: a blocking finding is this run's non-zero exit, and
         # that verdict belongs to the gates step, not to this one.
-        REPORT_FILE="$(mktemp)"
+        #
+        # Guarded, deliberately: this assignment runs under `set -eu` before
+        # any `|| true` appears in the step. Left bare, a `mktemp` failure
+        # (a full /tmp, a locked-down runner) would abort this whole step
+        # non-zero and could flip an otherwise-passing job to failed over a
+        # step that only exists to post an advisory comment. The `|| { ... }`
+        # form is exempt from `set -e`: a command's failure inside an `||`
+        # list never triggers it, only a bare command's would.
+        REPORT_FILE="$(mktemp)" || {
+          echo "::warning::conductor: could not create a temporary file for the pull request comment step; skipping the pull request comment. The gate's own verdict is unaffected."
+          exit 0
+        }
         ARGS=(run --stage "$STAGE" --format text --verbose --output "$REPORT_FILE")
         if [ -n "$BASE_REF" ]; then
           ARGS+=(--base "$BASE_REF")
@@ -667,7 +692,8 @@ runs:
         # it, wraps it in a fenced block behind a hidden sticky marker, and
         # never exits non-zero: a posting failure -- most commonly a fork
         # pull_request's read-only token -- prints a ::warning:: and returns.
-        node "$ACTION_PATH/scripts/pr-comment.mjs" \
-          --report "$REPORT_FILE" \
-          --pr "$PR_NUMBER" \
-          --repo "$GITHUB_REPOSITORY"
+        NODE_ARGS=(--report "$REPORT_FILE" --pr "$PR_NUMBER" --repo "$GITHUB_REPOSITORY")
+        if [ -n "$PR_COMMENT_MARKER" ]; then
+          NODE_ARGS+=(--marker "$PR_COMMENT_MARKER")
+        fi
+        node "$ACTION_PATH/scripts/pr-comment.mjs" "${NODE_ARGS[@]}"
