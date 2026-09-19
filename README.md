@@ -691,6 +691,99 @@ workflows do.
 
 ### The report as a pull request comment
 
+**Built in, opt-in.** This matters most for an advisory job: a `pull_request`
+check that is not marked required does not block anything when it fails, and
+without a comment its findings live only in the job's exit code and log,
+which teaches a developer nothing. Set `pr-comment: true` on the Action's own
+step and add `pull-requests: write` to the job's `permissions`:
+
+```yaml
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    steps:
+      # ... checkout, pnpm, setup-node, install, as in the example above ...
+      - id: conductor
+        uses: ./
+        with:
+          output: conductor.sarif
+          pr-comment: true
+```
+
+That posts conductor's own text report, the one the README quotes above
+("conductor: clean, nothing blocked. 2 gate(s) ran: ..."), as a comment on
+the pull request. It is **sticky**: a hidden marker in the comment body lets
+a re-run find and update that same comment, so a push does not pile up a new
+comment every time, the way the manual recipe below does. It runs on a
+`pull_request` or `pull_request_target` event only, and it runs whether the
+gates step passed or failed, since a blocking run is the one an advisory
+check most needs a developer to actually see.
+
+**It is a no-op on a pull request from a fork.** The default `GITHUB_TOKEN`
+there is read-only regardless of the `pull-requests: write` permission you
+grant, so the post fails; the step catches that, prints a `::warning::`
+naming the likely cause, and continues. The gate's own pass/fail is decided
+entirely by the earlier "Run the gates" step and never depends on whether
+the comment posted, on a fork or anywhere else. `pull_request_target` runs
+with a writable token and the base repository's own workflow instead, which
+is a different security decision to take on purpose rather than a flag to
+add; nothing here does that for you.
+
+Off by default, so an existing consumer of this action is unaffected.
+
+**The sticky match only ever adopts conductor's own comment.** On
+`pull_request_target` this step runs with a write token even though the
+pull request itself is untrusted, so anyone who can comment on the pull
+request could, in principle, author a comment carrying the same hidden
+marker before conductor's first run. The match requires the marker AND that
+the comment was authored by the GitHub Actions bot; a marker in anyone
+else's comment is never adopted, and conductor creates its own comment
+instead, exactly as if no marked comment existed.
+
+**Running this Action more than once against the same pull request** (for
+example, once per package in a monorepo) needs its own marker per run, or
+those runs fight over one shared comment. Set `pr-comment-marker` to a
+distinct string per invocation and each run stays sticky to its own
+comment; left unset (the default), every invocation uses the same built-in
+marker, which is the existing, unchanged behaviour for a single invocation
+per pull request.
+
+```yaml
+      - id: conductor-package-a
+        uses: ./
+        with:
+          pr-comment: true
+          pr-comment-marker: 'package-a'
+      - id: conductor-package-b
+        uses: ./
+        with:
+          pr-comment: true
+          pr-comment-marker: 'package-b'
+```
+
+**A note for anyone changing this surface, not for a consumer of the
+Action**: the comment body reaches `gh` with `-F body=@<file>` (`gh api`'s
+file-read form), never `-f`, which sends the value as a literal string
+instead of reading the file. The offline test suite
+(`scripts/tests/pr-comment.test.mjs`, `scripts/tests/pr-comment-cli.test.mjs`)
+replaces `gh` with a recorder or a shim, and neither can tell `-f` from `-F`
+apart, since both simply accept a `key=value` string and neither actually
+reads the `@file` form. `scripts/tests/pr-comment-smoke.test.mjs` is what
+actually proves the distinction, against a real `gh` binary; it is skipped
+by an ordinary offline `pnpm test` run and only runs with `GH_TOKEN` (or
+`GITHUB_TOKEN`), `CONDUCTOR_PR_COMMENT_SMOKE_REPO`, and
+`CONDUCTOR_PR_COMMENT_SMOKE_ISSUE` set. Run it for real against a scratch
+issue or pull request before any release that touches
+`scripts/lib/pr-comment.mjs` or `scripts/pr-comment.mjs`; the file itself
+documents the exact invocation.
+
+**The manual recipe below still has a reason to exist**: a non-sticky
+comment (one per run, never edited), a report you want to post yourself with
+different formatting, or a workflow that would rather not add
+`pull-requests: write` to the same job the gates run in. For the common
+case, `pr-comment: true` is the built-in answer.
+
 The SARIF upload produces no alerts on a private repository without GitHub
 Code Security, which is why that step carries `continue-on-error`. A comment
 is free there. Add `pull-requests: write` to the job's `permissions` and this
