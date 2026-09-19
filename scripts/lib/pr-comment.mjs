@@ -55,6 +55,14 @@ export function buildCommentBody(reportText, marker = MARKER) {
  * `user.type` is `Bot`. Both are checked, not just one, so a comment is
  * only ever treated as conductor's own when it carries the exact identity
  * conductor's own posts under.
+ *
+ * LATENT COUPLING: this literal is correct only because action.yml pins the
+ * comment step's `GH_TOKEN` to `${{ github.token }}`, so the step always
+ * posts as github-actions[bot] and always matches its own comments. If the
+ * step's token is ever made configurable (an App token or a PAT authors
+ * comments under a different login), this gate must change in lockstep, or
+ * conductor stops recognizing its own comment and creates a new one every
+ * run. Keep the two in step.
  */
 const BOT_LOGIN = 'github-actions[bot]';
 
