@@ -57,14 +57,38 @@ action installs.
   **What this does not cover:** forks, where the base repository's workflow
   file runs, so a fork author never writes the pins that judge them (the rule
   still fires on a fork pull request and judges the base workflow's own pins,
-  so a deliberate backward pin there refuses every fork run); and a pull
-  request that deletes the step or moves the `uses:` pin, for which branch
-  protection with review required for `.github/workflows` remains the control.
+  so a deliberate backward pin there refuses every fork run); `merge_group`
+  events, where `GITHUB_BASE_REF` is empty although the queue branch carries the
+  pull request's commits and workflow file, so a consumer whose only required
+  check runs there gets nothing from this rule and should keep the
+  `pull_request` run required too; and a pull request that deletes the step or
+  moves the `uses:` pin, for which branch protection with review required for
+  `.github/workflows` remains the control.
 
-  **The cost today** is one refusal that is not hypothetical:
-  `intent-guard-version: 1.4.0` is published and below what this tag ships, so
-  a workflow carrying that pin now fails on a pull request until the line is
-  removed or raised.
+  **The cost today** is not one refusal and not one input. Every one of the four
+  has published versions below its constant, and counted from the registry on
+  2026-09-18 there are 46 pins that a pull request may no longer carry:
+  `conductor-version` has 6 below 0.4.0 (0.2.0 through 0.3.0),
+  `dep-guard-version` 8 below 0.6.0, `vault-guard-version` 25 below 1.7.0, and
+  `intent-guard-version` 7 below 1.5.2. A workflow carrying any of them now
+  fails on a pull request. **The migration is to remove the input**, whose
+  default is the version this tag ships, or to raise it to that version or
+  newer.
+
+  What each input loses differs, and it is worth being exact about it.
+  `dep-guard-version` and `vault-guard-version` below the constant were already
+  degraded rather than working: their `TRUST_BASE_MIN_VERSION` floors in
+  `src/gate-runner.ts` are the same numbers, 0.6.0 and 1.7.0, so on a
+  pull-request run the umbrella **withheld** `--trust-base` from those builds.
+  Withheld is not a failure: the gate still ran, read its own control inputs
+  from the tree under judgment, and was reported on the run's report line, in
+  the summary and as a `conductor/trust-base-not-passed` SARIF notification.
+  Those pins now become a hard refusal instead. `intent-guard-version` 1.4.0,
+  1.5.0 and 1.5.1 were fully functional in pull-request mode, since that gate's
+  floor is 1.4.0 and sits below the constant, and they are now refused outright;
+  1.2.x and 1.3.x were withheld before. The sharpest cost is
+  `conductor-version`: the umbrella holds no floor on itself, so its 6 older
+  pins went from fully working to refused with no prior mechanism at all.
 
 ### Changed
 

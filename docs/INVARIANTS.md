@@ -543,14 +543,19 @@ Five properties, each load-bearing:
   shape is the failure.
 - The event test is `GITHUB_BASE_REF` being non-empty, the same one the run step
   uses to decide whether to pass `--trust-base`, rather than a second detector
-  to keep in step. It rests on a PLATFORM GUARANTEE worth recording, because a
-  same-repo pull request's author writes the workflow file and the obvious
-  bypass is therefore `env: GITHUB_BASE_REF: ""` at job level: GitHub documents
-  that the default `GITHUB_*` and `RUNNER_*` variables cannot be overwritten and
-  that such an assignment is ignored
+  to keep in step. A same-repo pull request's author writes the workflow file, so
+  the obvious bypass is `env: GITHUB_BASE_REF: ""` at job level, and TWO separate
+  things close it. First, the validate step DECLARES
+  `GITHUB_BASE_REF: ${{ github.base_ref }}` in its own `env:` mapping, the same
+  spelling the gates step uses. A step-level entry wins over a job-level one, and
+  `github.base_ref` is read out of the event payload rather than out of anything
+  the workflow author writes, so the value cannot come from the workflow file.
+  Second, as a line of defence the step does not depend on, GitHub documents that
+  the default `GITHUB_*` and `RUNNER_*` variables cannot be overwritten and that
+  such an assignment is ignored
   (https://docs.github.com/en/actions/reference/workflows-and-actions/variables).
-  That is also why the step reads the runner's own default variable rather than
-  declaring `GITHUB_BASE_REF` in its `env:` mapping.
+  The guarantee is recorded here rather than relied on: if it ever failed, the
+  declared form is still immune and a bare read of the default would not be.
 - Written accept-only-if, not refuse-if, for the same reason as the npm floor:
   `[` exits 2 on a malformed or out-of-range comparison and an `if` reads 2 as
   false, so a refuse-if shape turns an arithmetic error into permission.
@@ -578,18 +583,35 @@ else.
   safety: a push to an UNPROTECTED branch runs that branch's own workflow file,
   written by the same author, with `GITHUB_BASE_REF` empty, so it is as
   author-controlled as a pull request and the rule does not cover it.
+- Not `merge_group` events. `GITHUB_BASE_REF` is set on `pull_request` and
+  `pull_request_target` only, so on a merge-queue run it is empty and the check
+  does not fire, while the merge-queue branch carries the pull request's commits
+  and its workflow file. A consumer whose ONLY required check runs on
+  `merge_group` therefore gets nothing from this rule. Where the `pull_request`
+  run is also required, it still catches the pin before the queue is reached.
 - Not the version the gates are compared against being right. The constants say
   what this tag ships, not what is good.
 
 **Enforced by:** the `refuses a pull request that pins a gate backward` cases in
-`tests/action.test.ts`. Three of the four constants equal their input's default
-with nothing published between them, so those cases drive the real step text
-with one constant advanced a minor version, which is the action as it will be
-the day a newer gate ships, and assert the replacement matched, so deleting or
-renaming a constant turns them red. intent-guard needs no such copy: 1.4.0 is
-published and below what this tag ships, so the shipped step refuses it. Plus a
-drift case tying each constant to its input's default, a `1.10.0` case on the
-accepted side that a lexicographic comparison would refuse, and a text case
+`tests/action.test.ts`. EVERY ONE of the four inputs has real published versions
+below its constant, so the UNMODIFIED step refuses real pins today and the cases
+say so with real numbers: `conductor-version: 0.3.0`, `dep-guard-version: 0.5.0`,
+`vault-guard-version: 1.6.0` and `intent-guard-version: 1.4.0` are each driven
+through the shipped step text and refused on a pull-request run, and accepted
+with `GITHUB_BASE_REF` unset. Counted from the registry on 2026-09-18 there are
+46 such pins: 6 conductor versions below 0.4.0, 8 dep-guard below 0.6.0, 25
+vault-guard below 1.7.0 and 7 intent-guard below 1.5.2.
+
+A second set of cases drives a COPY of the step with one constant advanced a
+minor version, which is the action as it will be the day a newer gate ships.
+That device is there to prove DRIFT-FORWARD behaviour, that the comparison
+follows the constant rather than a number frozen into the test, and not because
+the rule would otherwise be unobservable. Each copy asserts the replacement
+MATCHED, so deleting or renaming a constant turns those red rather than quietly
+re-testing the unmodified step. Plus a drift case tying each constant to its
+input's default, a `1.10.0` case on the accepted side that a lexicographic
+comparison would refuse, a case asserting the step declares
+`GITHUB_BASE_REF: ${{ github.base_ref }}` in its `env:` mapping, and a text case
 pinning the accept-only-if shape and the event gate in order.
 
 ## The pull-request trust boundary: the rules come from the base ref

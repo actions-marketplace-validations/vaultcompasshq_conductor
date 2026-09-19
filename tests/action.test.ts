@@ -279,10 +279,14 @@ function defaultVersionEnv(overrides: Record<string, string> = {}): Record<strin
  * Runs a validate script, which is the step's own text unless a caller hands
  * over a modified copy.
  *
- * `extraEnv` is how the event is chosen. GITHUB_BASE_REF is a default variable
- * the runner sets, not one this step declares, so a harness that wants a
- * pull-request run has to set it here; left out, the step sees the push shape,
- * which is what every case written before the pull-request rule assumed.
+ * `extraEnv` is how the event is chosen. This harness builds the environment
+ * from scratch rather than evaluating the step's `env:` mapping, which it could
+ * not do anyway: the mapping holds `${{ }}` expressions that only Actions can
+ * resolve. So a harness that wants a pull-request run sets GITHUB_BASE_REF
+ * here; left out, the step sees the push shape, which is what every case
+ * written before the pull-request rule assumed. On a real runner that variable
+ * reaches the step because the step DECLARES it from `github.base_ref`, which
+ * the case named after that mapping asserts separately.
  */
 function runValidateScript(
   script: string,
@@ -623,6 +627,22 @@ describe('action.yml installs the gates outside the tree', () => {
       expect(Object.values(stepEnv('install'))).toContain(`\${{ inputs.${input} }}`);
     }
   });
+
+  it('declares the pull-request test from the event payload, the same as the gates step', () => {
+    // NOT read as the runner's bare default variable. A step-level `env:` entry
+    // wins over a job-level one, and `github.base_ref` is resolved from the
+    // event payload rather than from anything the workflow author writes, so
+    // the obvious bypass -- `env: GITHUB_BASE_REF: ""` at job level, written by
+    // the same pull request that writes the pins -- cannot reach this step even
+    // if the platform's no-overwrite guarantee for default variables failed.
+    // The guarantee is the second line of defence, recorded in
+    // docs/INVARIANTS.md and not depended on here.
+    expect(stepEnv('validate').GITHUB_BASE_REF).toBe('${{ github.base_ref }}');
+    // One spelling across the file: the gates step decides whether to pass
+    // `--trust-base` off the same value, and two spellings of one event test
+    // are two things to keep in step.
+    expect(stepEnv('gates').GITHUB_BASE_REF).toBe(stepEnv('validate').GITHUB_BASE_REF);
+  });
 });
 
 /**
@@ -657,15 +677,42 @@ function tagVersion(prefix: string): string {
 }
 
 /**
+ * One REAL published version of each gate, below what this tag ships.
+ *
+ * Every one of the four inputs has published versions under its constant, so
+ * the shipped step refuses real pins today and these cases can drive the
+ * unmodified step text. Counted off the registry on 2026-09-18: 6 conductor
+ * below 0.4.0 (0.2.0 through 0.3.0), 8 dep-guard below 0.6.0, 25 vault-guard
+ * below 1.7.0, 7 intent-guard below 1.5.2. Forty-six pins in all that a
+ * consumer could write today and this tag now refuses on a pull request.
+ *
+ * Each value here is a version somebody could really have pinned, not a number
+ * invented to be low. A raised constant leaves them valid, since they only have
+ * to sit BELOW it; a constant lowered under one of them turns these red, which
+ * is the right answer for a tag that no longer ships what the table assumes.
+ */
+const PUBLISHED_BELOW: Record<(typeof VERSION_INPUTS)[number], string> = {
+  'conductor-version': '0.3.0',
+  'dep-guard-version': '0.5.0',
+  'vault-guard-version': '1.6.0',
+  'intent-guard-version': '1.4.0',
+};
+
+/**
  * The same step with ONE tag constant advanced by a minor version: the action
  * as it will be the day a newer gate ships and this tag starts shipping it.
  *
- * Three of the four constants equal their input's default and nothing published
- * lies between them, so on the shipped file those three cases cannot be seen
- * acting at all. Advancing the constant is not a weakened program: every line
- * of the check is the shipped one, only the number it measures against moves.
- * The replacement is asserted to have MATCHED, so renaming or deleting the
- * constant turns these red rather than quietly re-testing the unmodified step.
+ * This device exists to prove DRIFT-FORWARD behaviour, that the comparison
+ * follows the constant rather than a number frozen into this file, and NOT
+ * because the rule is otherwise unobservable: every one of the four inputs has
+ * real published versions below its constant (see PUBLISHED_BELOW), and the
+ * cases driving the UNMODIFIED step on those versions are in the describe
+ * block below.
+ *
+ * Advancing the constant is not a weakened program: every line of the check is
+ * the shipped one, only the number it measures against moves. The replacement
+ * is asserted to have MATCHED, so renaming or deleting the constant turns these
+ * red rather than quietly re-testing the unmodified step.
  */
 function scriptWithFutureTag(prefix: string): string {
   const future = validateScript.replace(
@@ -699,6 +746,32 @@ describe('action.yml refuses a pull request that pins a gate backward', () => {
       expect(run.stderr).toContain('pull request');
       // And the remedy, which is to stop pinning at all.
       expect(run.stderr).toContain('REMOVE the input');
+    }
+  });
+
+  it('refuses a real published version of every one of the four, on the shipped step', () => {
+    // THE UNMODIFIED STEP, on pins a consumer could write this morning. The
+    // future-copy cases above prove the comparison follows the constant; these
+    // prove the shipped file refuses something real, for all four inputs and
+    // not only for intent-guard.
+    for (const input of VERSION_INPUTS) {
+      const asked = PUBLISHED_BELOW[input];
+      const shipped = tagVersion(TAG_CONSTANTS[input]);
+      const run = runValidate({ [VERSION_VARS[input]]: asked }, { GITHUB_BASE_REF: 'main' });
+      expect([input, asked, run.status]).toEqual([input, asked, 1]);
+      // The input by name, since three other pins are in the same message's
+      // reach and a refusal that does not say which one sends the reader
+      // looking.
+      expect(run.stderr).toContain(input);
+      // BOTH numbers: what was asked for, and what would have been accepted.
+      expect(run.stderr).toContain(asked);
+      expect(run.stderr).toContain(shipped);
+      expect(run.stderr).toContain('REMOVE the input');
+      // And only on a pull request. The same published pin is accepted with
+      // GITHUB_BASE_REF unset, which is the SCOPE of the rule rather than a
+      // claim that a push run is safe.
+      const push = runValidate({ [VERSION_VARS[input]]: asked }, {});
+      expect([input, asked, push.status]).toEqual([input, asked, 0]);
     }
   });
 

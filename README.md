@@ -567,12 +567,17 @@ and the fix is to **remove the input**: the default is that version. Pinning
 **forward** is still accepted, on an assumption the rule does not enforce, that
 a newer gate is at least as strict; nothing bounds how far forward you pin.
 
-Two things follow from that, stated because the summary is wider than the rule.
+Three things follow from that, stated because the summary is wider than the rule.
 It fires on fork pull requests too, where the base repository's workflow file is
 the one that runs, so a deliberate backward pin you wrote yourself will refuse
-every fork run until you remove it. And push runs are out of scope rather than
-safe: a push to an unprotected branch runs that branch's own workflow file,
-written by the same author. Neither this nor anything else in `action.yml`
+every fork run until you remove it. Push runs are out of scope rather than safe:
+a push to an unprotected branch runs that branch's own workflow file, written by
+the same author. And `merge_group` runs are not covered at all: `GITHUB_BASE_REF`
+is set on `pull_request` and `pull_request_target` only, so it is empty in a
+merge queue even though the queue branch carries the pull request's commits and
+its workflow file. If your only required check runs on `merge_group`, this rule
+does nothing for you; keep the `pull_request` run required as well and the pin is
+caught before the queue. Neither this nor anything else in `action.yml`
 replaces branch protection with review required for `.github/workflows`, which
 is still the only control over a pull request that edits the workflow.
 

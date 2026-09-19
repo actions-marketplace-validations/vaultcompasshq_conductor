@@ -119,6 +119,11 @@ runs:
         DEP_GUARD_VERSION: ${{ inputs.dep-guard-version }}
         VAULT_GUARD_VERSION: ${{ inputs.vault-guard-version }}
         INTENT_GUARD_VERSION: ${{ inputs.intent-guard-version }}
+        # The pull-request test, taken from the EVENT PAYLOAD rather than from
+        # whatever environment the job happens to hand this step. Same spelling
+        # as the gates step below, which reads the same value for the same
+        # event. See the comment on the gate itself for why it is declared.
+        GITHUB_BASE_REF: ${{ github.base_ref }}
       run: |
         set -eu
 
@@ -158,8 +163,11 @@ runs:
         # gate has two published versions a pull request can pin back to the
         # one that predates the rule that would have caught it, clear the shape
         # check, and be judged by the rule set it chose for itself. That is not
-        # hypothetical here: intent-guard 1.4.0 is published, and this tag
-        # ships 1.5.2.
+        # hypothetical, and not only for one input: EVERY ONE of the four has
+        # published versions below its constant here. Counted from the registry
+        # on 2026-09-18, 46 of them: conductor 0.2.0 through 0.3.0 is 6 below
+        # 0.4.0, dep-guard 8 below 0.6.0, vault-guard 25 below 1.7.0, and
+        # intent-guard 7 below 1.5.2, intent-guard 1.4.0 among them.
         #
         # This is the same class of hole as an input that turns pull-request
         # mode off, which the trust-base input above refuses to offer for
@@ -268,11 +276,19 @@ runs:
         # EMPTY outside a pull request, so empty has to read as "not a pull
         # request" here exactly as it does there.
         #
-        # Read as the runner's own default variable rather than declared in
-        # this step's env mapping: the obvious bypass is a job-level
+        # DECLARED IN THIS STEP'S ENV MAPPING, from the github.base_ref
+        # expression, so the value cannot come from the workflow file even if
+        # the platform guarantee failed. (Written without the expression
+        # delimiters on purpose: an expression inside a run block is expanded
+        # by Actions, comment or not.) The obvious bypass is a job-level
         # env: GITHUB_BASE_REF: "", written by the same pull request that
-        # writes the pins, and GitHub documents that the default GITHUB_ and
-        # RUNNER_ variables cannot be overwritten that way.
+        # writes the pins. A step-level env entry wins over a job-level one,
+        # and github.base_ref is read out of the event payload rather than out
+        # of anything the workflow author writes, so the declared form closes
+        # that bypass on its own. The platform guarantee that the default
+        # GITHUB_ and RUNNER_ variables cannot be overwritten is the SECOND
+        # line of defence and is recorded in docs/INVARIANTS.md; this step does
+        # not depend on it.
         if [ -n "${GITHUB_BASE_REF:-}" ]; then
           pin_status=0
           check_pin conductor-version "$CONDUCTOR_VERSION" "$TAG_CONDUCTOR_MAJOR" "$TAG_CONDUCTOR_MINOR" "$TAG_CONDUCTOR_PATCH"
