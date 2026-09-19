@@ -63,16 +63,56 @@ export function compareExactSemver(a, b) {
  * wrong one.
  */
 export function readActionVersionDefault(actionYmlText) {
+  return readInputDefault(actionYmlText, 'conductor-version');
+}
+
+/**
+ * The gates this action installs alongside the umbrella, and the npm package
+ * each `-version` input names.
+ *
+ * THESE ARE THE SUBSTANCE OF AN ACTION-ONLY RELEASE. The umbrella's own
+ * version stays put by definition on such a tag; what actually moves is
+ * usually one of these pins. A release that ships a pin naming an unpublished
+ * version hands every consumer an action that dies at `npm install -g`, which
+ * is the same failure as a Release page describing a version nobody can
+ * install -- just one level down.
+ */
+export const GATE_INPUTS = [
+  ['dep-guard-version', '@vaultcompass/dep-guard'],
+  ['vault-guard-version', '@vaultcompass/vault-guard'],
+  ['intent-guard-version', '@vaultcompass/intent-guard'],
+];
+
+/**
+ * One input's `default:`, anchored to that input's own block.
+ *
+ * Anchored to a two-space key at the start of a line rather than searching for
+ * the name anywhere, because FOUR inputs in this action.yml end in `-version`
+ * and their descriptions refer to each other by name. A loose search can land
+ * in a description and read the NEXT input's default, which would compare the
+ * umbrella against a gate.
+ */
+export function readInputDefault(actionYmlText, inputName) {
   if (typeof actionYmlText !== 'string') {
-    throw new Error('action.yml could not be read, so its conductor-version default is unknown.');
+    throw new Error(`action.yml could not be read, so its ${inputName} default is unknown.`);
   }
-  const match = /conductor-version:[\s\S]*?\n\s*default:\s*(\S+)/.exec(actionYmlText);
-  if (match === null) {
+  const lines = actionYmlText.split('\n');
+  const at = lines.findIndex((line) => line === `  ${inputName}:`);
+  if (at === -1) {
     throw new Error(
-      'action.yml has no conductor-version input with a default, so the version it installs could not be checked against the package being released.'
+      `action.yml has no ${inputName} input at the expected indentation, so the version it installs could not be checked.`
     );
   }
-  return match[1];
+  for (let i = at + 1; i < lines.length; i += 1) {
+    // Stop at the next key at the same depth: a default that is not inside
+    // this input's own block is somebody else's.
+    if (/^ {2}\S/.test(lines[i])) break;
+    const match = /^\s*default:\s*(\S+)\s*$/.exec(lines[i]);
+    if (match) return match[1];
+  }
+  throw new Error(
+    `action.yml's ${inputName} input has no default, so the version it installs could not be checked against the package being released.`
+  );
 }
 
 // A package release must ship an action whose default names the version being
@@ -163,13 +203,26 @@ export function classifyRelease({
   // The condition that carries the "never describes anything unpublished"
   // property. Everything above is shape, ordering and this tree's own files;
   // this is the one that talks to the world.
-  const found = publishedVersion(packageName, packageVersion);
-  if (found !== packageVersion) {
-    throw new Error(
-      `Tag ${tagName} looks like an action-only release, but ${packageName}@${packageVersion} is not on the npm registry (lookup returned ${
-        found === null || found === undefined ? 'nothing' : `"${found}"`
-      }). An action-only tag must ship a version that is already published, or its GitHub Release would describe something nobody can install. Refusing to publish.`
-    );
+  // EVERY PACKAGE THIS TAG SHIPS, not just the umbrella. The four gate pins
+  // are what an action-only release usually moves, and a pin naming an
+  // unpublished version hands every consumer an action that dies at
+  // `npm install -g`. Checked as a list rather than one call so a pin added
+  // later is covered by construction; the loop does not stop at the first hit,
+  // or a tree whose LAST pin is broken would pass.
+  const shipped = [[packageName, packageVersion]];
+  for (const [inputName, gateName] of GATE_INPUTS) {
+    shipped.push([gateName, readInputDefault(actionYmlText, inputName)]);
+  }
+
+  for (const [name, version] of shipped) {
+    const found = publishedVersion(name, version);
+    if (found !== version) {
+      throw new Error(
+        `Tag ${tagName} looks like an action-only release, but ${name}@${version} is not on the npm registry (lookup returned ${
+          found === null || found === undefined ? 'nothing' : `"${found}"`
+        }). An action-only tag must ship versions that are already published, or consumers of that tag fail at install and its GitHub Release describes something nobody can get. Refusing to publish.`
+      );
+    }
   }
 
   const actionDefault = readActionVersionDefault(actionYmlText);

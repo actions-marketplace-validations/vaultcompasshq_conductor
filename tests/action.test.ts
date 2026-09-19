@@ -358,11 +358,12 @@ describe('action.yml installs the gates without trusting them first', () => {
     // 20.10 through 20.13, which setup-node will hand a consumer today. This
     // action does not install Node itself -- the documented workflow has the
     // caller do it -- so the floor is enforced rather than assumed.
-    for (const old of ['8.19.4', '9.9.4', '10.2.4', '10.5.0']) {
+    // 10.5.1 is the LAST version that fails, and it is what Node 22.0.0 ships.
+    for (const old of ['8.19.4', '9.9.4', '10.2.4', '10.5.0', '10.5.1']) {
       const run = runInstall({}, old);
       expect([old, run.status]).not.toEqual([old, 0]);
       expect(run.stderr).toContain(old);
-      expect(run.stderr).toContain('10.6.0 or newer');
+      expect(run.stderr).toContain('10.5.2 or newer');
       // It must never reach the install with a client that cannot verify.
       expect(run.argv).not.toContain('install');
     }
@@ -371,7 +372,12 @@ describe('action.yml installs the gates without trusting them first', () => {
   it('accepts the first npm that actually verifies, and newer', () => {
     // The floor must not be too high either: 10.6.0 is the first version
     // measured to pass, so refusing it would break consumers for nothing.
-    for (const ok of ['10.6.0', '10.9.2', '11.0.0']) {
+    // 10.5.2 leads the list deliberately: it is the first version measured to
+    // pass on a cold cache, and it is what Node 20.13.0 and 20.13.1 ship. The
+    // floor sat at 10.6.0 until a review bisected properly, and that number
+    // refused those consumers with a message saying their client could not
+    // verify when it could. Both edges of the real boundary are pinned now.
+    for (const ok of ['10.5.2', '10.6.0', '10.9.2', '11.0.0', '12.0.0']) {
       expect([ok, runInstall({}, ok).status]).toEqual([ok, 0]);
     }
   });
@@ -383,7 +389,7 @@ describe('action.yml installs the gates without trusting them first', () => {
     // and the floor was skipped -- on a client the floor exists to refuse.
     const old = runInstall({}, 'npm notice a new version is available\\n10.5.0');
     expect(old.status).not.toBe(0);
-    expect(old.stderr).toContain('10.6.0 or newer');
+    expect(old.stderr).toContain('10.5.2 or newer');
     expect(old.argv).not.toContain('install');
 
     // And the same shape must not refuse a client that is fine.

@@ -20,6 +20,10 @@
 import { describe, expect, test } from '@jest/globals';
 import { classifyRelease, parseExactSemver, compareExactSemver, readActionVersionDefault } from '../lib/release-kind.mjs';
 
+// All four `-version` inputs, at the real file's indentation, because the
+// classifier now reads every one of them. Three of the descriptions refer to
+// `conductor-version` by name on purpose: that is the shape a loose regex
+// lands in, reading the NEXT input's default instead of the intended one.
 const ACTION_YML = `
 inputs:
   conductor-version:
@@ -29,6 +33,12 @@ inputs:
   dep-guard-version:
     description: Same rule as conductor-version.
     default: 0.6.0
+  vault-guard-version:
+    description: Same rule as conductor-version.
+    default: 1.7.0
+  intent-guard-version:
+    description: Same rule as conductor-version.
+    default: 1.4.0
 `;
 
 const CHANGELOG = `# Changelog
@@ -51,7 +61,11 @@ function classify(overrides = {}) {
     packageVersion: '0.4.0',
     actionYmlText: ACTION_YML,
     changelogText: CHANGELOG,
-    publishedVersion: () => '0.4.0',
+    // "Everything is published": echoes the version asked for. The classifier
+    // now looks up all four packages, so a stub returning one fixed string
+    // would fail three of them for the wrong reason. Tests that want a
+    // particular package unpublished override this and say which.
+    publishedVersion: (_name, version) => version,
     ...overrides,
   });
 }
@@ -152,6 +166,39 @@ describe('classifyRelease, action-only candidates', () => {
     // this, its Release page would describe a version nobody can install.
     expect(() => classify({ publishedVersion: () => null })).toThrow(/registry/);
     expect(() => classify({ publishedVersion: () => '0.3.0' })).toThrow(/registry/);
+  });
+
+  test('refuses when a GATE pin names a version that is not published', () => {
+    // THE HOLE THIS CLOSES. The registry check used to cover the conductor
+    // package and nothing else, but in this repository the action's substance
+    // IS the four `-version` pins, and moving them is the main reason an
+    // action-only release exists at all. So a tag that bumped a gate pin ahead
+    // of that gate's own publish classified as action-only, got a green run
+    // and a Release page, and every consumer of that tag then failed at
+    // `npm install -g @vaultcompass/vault-guard@<unpublished>`.
+    //
+    // That is precisely "a GitHub Release describing a version nobody can
+    // install", which is the property this module's header claims to keep.
+    // It held for one of four pins.
+    const unpublishedGate = ACTION_YML.replace('default: 0.6.0', 'default: 99.99.99');
+    expect(() =>
+      classify({
+        actionYmlText: unpublishedGate,
+        publishedVersion: (name, version) =>
+          name === '@vaultcompass/dep-guard' && version === '99.99.99' ? null : version,
+      })
+    ).toThrow(/dep-guard/);
+  });
+
+  test('checks every gate pin, not just the first one it finds', () => {
+    // A loop that stopped at the first hit would pass a tree whose LAST pin is
+    // the broken one.
+    expect(() =>
+      classify({
+        publishedVersion: (name, version) =>
+          name === '@vaultcompass/conductor' ? version : null,
+      })
+    ).toThrow(/registry/);
   });
 
   test('refuses when the action default moved but the package did not', () => {
