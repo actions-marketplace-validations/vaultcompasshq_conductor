@@ -546,6 +546,11 @@ runs:
         GITHUB_BASE_REF: ${{ github.base_ref }}
         GITHUB_HEAD_REF: ${{ github.head_ref }}
         BASE_REF: ${{ inputs.base-ref }}
+        # The base-ref fetch below runs non-interactively; without this a
+        # misconfigured runner could stall on a git credential prompt instead
+        # of failing fast. There is no timeout wrapper (no portable one on the
+        # bash runners), so this is the guard against the one hang path.
+        GIT_TERMINAL_PROMPT: '0'
         TRUST_BASE: ${{ inputs.trust-base }}
         SPEC: ${{ inputs.spec }}
         STAGE: ${{ inputs.stage }}
