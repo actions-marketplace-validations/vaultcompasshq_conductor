@@ -657,7 +657,7 @@ describe('action.yml installs the gates without trusting them first', () => {
     // skips it and still exits 0.
     expect(manifest.dependencies['@vaultcompass/vault-guard']).toBe('1.8.0');
     expect(manifest.dependencies['@vaultcompass/intent-guard']).toBe('1.5.2');
-    expect(manifest.dependencies['@vaultcompass/conductor']).toBe('0.4.0');
+    expect(manifest.dependencies['@vaultcompass/conductor']).toBe('0.4.5');
     expect(manifest.dependencies['@vaultcompass/dep-guard']).toBe('0.7.0');
   });
 
@@ -690,7 +690,7 @@ describe('action.yml installs the gates outside the tree', () => {
     for (const input of VERSION_INPUTS) {
       expect(String(action.inputs?.[input]?.default ?? '')).toMatch(/^\d+\.\d+\.\d+$/);
     }
-    expect(action.inputs?.['conductor-version']?.default).toBe('0.4.0');
+    expect(action.inputs?.['conductor-version']?.default).toBe('0.4.5');
     expect(action.inputs?.['dep-guard-version']?.default).toBe('0.7.0');
     expect(action.inputs?.['vault-guard-version']?.default).toBe('1.8.0');
     expect(action.inputs?.['intent-guard-version']?.default).toBe('1.5.2');
@@ -737,7 +737,7 @@ describe('action.yml installs the gates outside the tree', () => {
       'install',
       '-g',
       '--ignore-scripts',
-      '@vaultcompass/conductor@0.4.0',
+      '@vaultcompass/conductor@0.4.5',
       '@vaultcompass/dep-guard@0.7.0',
       '@vaultcompass/vault-guard@1.8.0',
       '@vaultcompass/intent-guard@1.5.2',
@@ -1042,7 +1042,7 @@ describe('action.yml refuses a pull request that pins a gate backward', () => {
       ['DEP_GUARD_VERSION', '0.10.0'],
       ['VAULT_GUARD_VERSION', '1.8.1'],
       ['VAULT_GUARD_VERSION', '1.10.0'],
-      ['CONDUCTOR_VERSION', '0.4.1'],
+      ['CONDUCTOR_VERSION', '0.4.6'],
       ['CONDUCTOR_VERSION', '0.10.0'],
     ];
     for (const [variable, value] of forward) {

@@ -14,6 +14,15 @@ likely to be a version bump someone forgot to commit than a deliberate one.
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-09-20
+
+**A package release. The tag and the package converge.**
+`@vaultcompass/conductor` moves to 0.4.5 on npm and the action's
+`conductor-version` default moves to `0.4.5` in lockstep, the same number
+the `v0.4.5` tag names. Versions 0.4.1 through 0.4.4 were action-only
+releases that moved the tag while the package stayed at 0.4.0; this release
+re-converges the two numbers.
+
 - Fixed the validate step's version-shape check to refuse a leading zero
   (`01.2.3`, `0.6.00`), matching the sibling scanners' regex; npm reads a
   value it cannot parse as a version as a dist-tag instead, which is the
