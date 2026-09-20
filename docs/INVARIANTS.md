@@ -981,9 +981,11 @@ and its validate-step error text say the same thing in the same words, and
 none of them may claim more than this.
 
 EXACT VERSIONS ONLY, refused in a validate step against
-`^[0-9]+\.[0-9]+\.[0-9]+$` before anything is fetched. A range or a
-dist-tag would move the decision out of the workflow file and onto whatever
-the registry served that morning, which is the same defect in a slower form.
+`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$` before anything is
+fetched. That pattern also refuses a leading zero, because npm reads
+`01.2.3` as a dist-tag rather than a version. A range or a dist-tag would
+move the decision out of the workflow file and onto whatever the registry
+served that morning, which is the same defect in a slower form.
 `latest` is the case worth naming because it is the one somebody reaches for.
 
 ANYTHING THAT READS action.yml PARSES IT, AND NEVER MATCHES LINES IN IT.

@@ -621,6 +621,49 @@ event the workflow file itself runs from the pull request's own ref, so an
 opt-out here would be settable by the very pull request the mode exists to
 judge: the knob and the thing it protects against would be the same file.
 
+**The normal way to use this is by tag, not by path.** `uses: ./` reads
+`action.yml` out of whichever tree the workflow runs against, which is
+correct only for this repository's own workflows testing themselves; on a
+pull request from anywhere else it would read `action.yml` out of the pull
+request being judged, and the version-pin protection described above
+"protects nothing" against a tree that controls its own judge (the
+validate step's own comment in `action.yml` says so in those words). Name
+this action by owner and tag instead:
+
+```yaml
+name: guardrails
+on: pull_request
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.11.0'
+      - id: conductor
+        uses: vaultcompasshq/conductor@v0.4.4
+        with:
+          output: conductor.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: ${{ steps.conductor.outputs.sarif }}
+```
+
+No version inputs there at all: left out, the four gates run at the versions
+this tag ships, which is the intended default. The fully spelled-out example
+below adds explicit version pins and comments explaining each one, for a
+workflow that wants that transparency; the four lines can still be left out
+entirely to take the tag's own versions, exactly as the form above does.
+
 ```yaml
 name: guardrails
 on: pull_request
@@ -654,7 +697,7 @@ jobs:
       # pinned below.
       - run: pnpm install --frozen-lockfile
       - id: conductor
-        uses: ./
+        uses: vaultcompasshq/conductor@v0.4.4
         with:
           output: conductor.sarif
           # Exact versions, never a range and never "latest". These four
@@ -705,7 +748,7 @@ step and add `pull-requests: write` to the job's `permissions`:
     steps:
       # ... checkout, pnpm, setup-node, install, as in the example above ...
       - id: conductor
-        uses: ./
+        uses: vaultcompasshq/conductor@v0.4.4
         with:
           output: conductor.sarif
           pr-comment: true
@@ -751,12 +794,12 @@ per pull request.
 
 ```yaml
       - id: conductor-package-a
-        uses: ./
+        uses: vaultcompasshq/conductor@v0.4.4
         with:
           pr-comment: true
           pr-comment-marker: 'package-a'
       - id: conductor-package-b
-        uses: ./
+        uses: vaultcompasshq/conductor@v0.4.4
         with:
           pr-comment: true
           pr-comment-marker: 'package-b'
