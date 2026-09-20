@@ -1137,16 +1137,69 @@ describe('pull-request mode through the CLI', () => {
     expect(result.stdout).toMatch(/the same commit as HEAD/);
   });
 
-  it('exits 2 when the base ref carries no policy, and says the head one is a proposal', () => {
+  it('exits could-not-run (2) when the base ref carries no policy, with the reason IN the text report', () => {
+    // The false-safe this pins against: a fresh adopter's first pull request,
+    // before "conductor init" has ever landed on the base branch. Two real
+    // consumer teams hit exactly this running conductor in advisory mode.
+    // Nothing may have run and the exit code says could-not-run, but until
+    // this test the ONLY place that said why was stderr -- a plain "conductor:
+    // <message>" line -- and stdout, which is what a --format text report
+    // and a pull request comment both read from, was completely empty. A
+    // reader saw a red step and an unhelpful blank report and had no way to
+    // tell a genuinely broken run from an adoption gap.
     const { repo, bin, marker } = attackRepo({ basePolicy: null });
 
     const result = runCli(repo, ['run', '--staged', '--trust-base', 'base'], bin);
 
     expect(result.status).toBe(2);
     expect(existsSync(marker)).toBe(false);
-    expect(result.stderr).toMatch(/No \.guardrails\.yaml on "base"/);
-    expect(result.stderr).toMatch(/is a proposal/);
-    expect(result.stderr).toMatch(/once it is on the base branch/);
+    // The reason is now IN THE TEXT REPORT (stdout), which is what a
+    // --format text run and the pull-request-comment step both read.
+    expect(result.stdout).toMatch(/No \.guardrails\.yaml on "base"/);
+    expect(result.stdout).toMatch(/is a proposal/);
+    expect(result.stdout).toMatch(/once it is on the base branch/);
+    // The verdict says could-not-run, never clean, and the word "clean"
+    // does not appear anywhere on a run that checked nothing.
+    expect(result.stdout).toMatch(/verdict: exit 2/);
+    expect(result.stdout).not.toMatch(/clean/);
+    // The head's own gates are named as not having run, exactly like the
+    // ref-unresolvable refusal above: this is the same could-not-run family,
+    // and the report follows the same shape rather than inventing a second
+    // one for "the ref resolved but carried no file".
+    expect(result.stdout).toMatch(/DID NOT RUN \(preparation-failed\)/);
+  });
+
+  it('stays a clean exit 0 when the base policy exists but the user switched every gate off', () => {
+    // The judgment call this PR has to make explicit: CONFIG ABSENT on the
+    // base (nobody has finished setup yet, a discovered-empty) is
+    // could-not-run, per the test above. CONFIG PRESENT but every gate
+    // switched off is a different state -- somebody wrote that file down on
+    // the base branch, on purpose -- and it stays the ordinary "0 gate(s)
+    // enabled" clean exit 0 this codebase already gives a policy file with
+    // enabled: false everywhere. This mirrors the no-contract (write one) vs
+    // contract-waived (a person already decided) distinction the intent gate
+    // already makes for a missing spec; see run.ts's SkippedGate and
+    // output-text.ts's skipWording. Pinned here so a future change cannot
+    // silently fold this case into could-not-run without a reviewer noticing
+    // the test that says it should not be.
+    const { repo, bin } = attackRepo({
+      basePolicy: [
+        'version: 1',
+        'gates:',
+        '  dependencies:',
+        '    product: dep-guard',
+        '    enabled: false',
+        '  secrets:',
+        '    product: vault-guard',
+        '    enabled: false',
+        '',
+      ].join('\n'),
+    });
+
+    const result = runCli(repo, ['run', '--staged', '--trust-base', 'base'], bin);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/verdict: exit 0, no gate ran because none is enabled/);
   });
 
   it('runs from the base policy even when the head deleted the policy file', () => {

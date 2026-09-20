@@ -128,6 +128,33 @@ type PolicyForRun =
  * reported, and, when the trust base itself cannot be used, it names the
  * gates the report says did not run.
  */
+/**
+ * An inventory, and only an inventory: a list of gate NAMES for the report,
+ * taken from the one file available when the trust base itself cannot supply
+ * a policy. It is head-controlled, so it can be SHORTER as well as longer
+ * than the base's -- every gate `enabled: false`, or a file that will not
+ * parse at all, leaves it empty.
+ *
+ * Neither direction can weaken the verdict, and that is the property this
+ * rests on rather than on the inventory being right. refusedTrustBase
+ * enforces every gate it names and writes exit 2 itself, and the refusal is
+ * carried on the result so both renderers lead with it whether the inventory
+ * names three gates or none. A longer list makes the report longer; a
+ * shorter one makes it shorter; the verdict is the same sentence either way.
+ *
+ * An unreadable head file leaves the list empty rather than throwing: the
+ * trust base is what went wrong, and reporting the head's malformed file
+ * would send the reader to the wrong fix on a run that would have ignored
+ * that file anyway.
+ */
+function inventoryFromHead(root: string, overrides: CliOverrides): Policy {
+  try {
+    return applyCliOverrides(loadPolicy(root), overrides);
+  } catch {
+    return { version: 1, gates: {}, report: { format: 'text' } };
+  }
+}
+
 function policyForRun(
   root: string,
   trustBase: string | undefined,
@@ -139,46 +166,59 @@ function policyForRun(
 
   const refusal = refuseTrustBaseRef(root, trustBase);
   if (refusal !== null) {
-    // An inventory, and only an inventory: a list of gate NAMES for the
-    // report, taken from the one file available when the base ref cannot be
-    // read. It is head-controlled, so it can be SHORTER as well as longer
-    // than the base's -- every gate `enabled: false`, or a file that will not
-    // parse at all, leaves it empty -- and an earlier comment here claimed
-    // only the longer direction, which is how the empty case went unnoticed.
-    //
-    // Neither direction can weaken the verdict, and that is the property this
-    // rests on rather than on the inventory being right. refusedTrustBase
-    // enforces every gate it names and writes exit 2 itself, and the refusal
-    // is carried on the result so both renderers lead with it whether the
-    // inventory names three gates or none. A longer list makes the report
-    // longer; a shorter one makes it shorter; the verdict is the same
-    // sentence either way.
-    //
-    // An unreadable head file leaves the list empty rather than replacing the
-    // refusal with a policy error: the ref is what went wrong, and reporting
-    // the head's malformed file would send the reader to the wrong fix on a
-    // run that would have ignored that file anyway.
-    let inventory: Policy = { version: 1, gates: {}, report: { format: 'text' } };
-    try {
-      inventory = applyCliOverrides(loadPolicy(root), overrides);
-    } catch {
-      inventory = { version: 1, gates: {}, report: { format: 'text' } };
-    }
-    return { kind: 'refused', ref: trustBase, detail: refusal, inventory };
+    return {
+      kind: 'refused',
+      ref: trustBase,
+      detail: refusal,
+      inventory: inventoryFromHead(root, overrides),
+    };
   }
 
   const baseText = readPolicyAtRef(root, trustBase);
   const headText = readPolicyAtRef(root, 'HEAD');
 
   if (baseText === null) {
-    throw new PolicyError(
+    // CONFIG ABSENT ON THE BASE, not a policy error thrown from here. The old
+    // shape threw a PolicyError, which the run command's catch prints as one
+    // line on STDERR and nothing else: no report on stdout, no SARIF file
+    // written, exit code 2 by accident of `fail()` rather than by the same
+    // could-not-run machinery every other trust-base failure goes through.
+    // Two real adopters, running in advisory mode, hit exactly this on their
+    // first pull request -- before "conductor init" had ever landed on their
+    // base branch -- and read a red step with an empty report as either
+    // nothing to see or a broken tool, never as "finish adopting".
+    //
+    // This is DISCOVERED-empty, not IMPOSED-empty: nobody wrote a policy file
+    // down and disabled every gate in it, the base ref simply has none yet.
+    // That is the same "nothing here is a result of any kind" shape as a base
+    // ref that will not resolve, so it goes through the exact same
+    // refusedTrustBase reporting: could-not-run (exit 2), the reason on the
+    // text report and in the SARIF log, and the head's own gates named as not
+    // having run. A base ref whose file is merely ABSENT must not be treated
+    // more gently than one that will not resolve at all; both mean this run
+    // has no policy to have been judged by.
+    //
+    // CONTRAST: a base ref that DOES carry a policy file in which the user
+    // switched every gate off, or deferred them all past this stage, is left
+    // alone below in the ordinary `runAll` path and keeps reporting a clean
+    // exit 0 -- see the "no gate ran because none is enabled" verdict in
+    // output-text.ts. That is an IMPOSED-empty state, a decision written down
+    // on the base branch on purpose, and mirrors the no-contract
+    // (discovered, write one) vs contract-waived (imposed, a person already
+    // decided) distinction the intent gate already makes for a missing spec.
+    const detail =
       `No ${POLICY_FILE_NAME} on "${trustBase}". On a pull-request run every rule comes from the ` +
-        'base ref, so this run has no policy at all and nothing was checked. ' +
-        (headText === null
-          ? `Run "conductor init" on the base branch.`
-          : `The ${POLICY_FILE_NAME} in this pull request is a proposal: it decides what runs ` +
-            'once it is on the base branch, and never on the pull request that adds it.')
-    );
+      'base ref, so this run has no policy at all and nothing was checked. ' +
+      (headText === null
+        ? `Run "conductor init" on the base branch.`
+        : `The ${POLICY_FILE_NAME} in this pull request is a proposal: it decides what runs ` +
+          'once it is on the base branch, and never on the pull request that adds it.');
+    return {
+      kind: 'refused',
+      ref: trustBase,
+      detail,
+      inventory: inventoryFromHead(root, overrides),
+    };
   }
 
   return {
