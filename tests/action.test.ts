@@ -481,10 +481,10 @@ describe('action.yml installs the gates without trusting them first', () => {
     // the install; they are not what makes the check cover the right thing.
     // Naming a package that is not installed is the quiet case: the audit
     // skips it and still exits 0.
-    expect(manifest.dependencies['@vaultcompass/vault-guard']).toBe('1.7.0');
+    expect(manifest.dependencies['@vaultcompass/vault-guard']).toBe('1.8.0');
     expect(manifest.dependencies['@vaultcompass/intent-guard']).toBe('1.5.2');
     expect(manifest.dependencies['@vaultcompass/conductor']).toBe('0.4.0');
-    expect(manifest.dependencies['@vaultcompass/dep-guard']).toBe('0.6.0');
+    expect(manifest.dependencies['@vaultcompass/dep-guard']).toBe('0.7.0');
   });
 
   it('carries a version override into the manifest as well as the install', () => {
@@ -517,8 +517,8 @@ describe('action.yml installs the gates outside the tree', () => {
       expect(String(action.inputs?.[input]?.default ?? '')).toMatch(/^\d+\.\d+\.\d+$/);
     }
     expect(action.inputs?.['conductor-version']?.default).toBe('0.4.0');
-    expect(action.inputs?.['dep-guard-version']?.default).toBe('0.6.0');
-    expect(action.inputs?.['vault-guard-version']?.default).toBe('1.7.0');
+    expect(action.inputs?.['dep-guard-version']?.default).toBe('0.7.0');
+    expect(action.inputs?.['vault-guard-version']?.default).toBe('1.8.0');
     expect(action.inputs?.['intent-guard-version']?.default).toBe('1.5.2');
   });
 
@@ -564,8 +564,8 @@ describe('action.yml installs the gates outside the tree', () => {
       '-g',
       '--ignore-scripts',
       '@vaultcompass/conductor@0.4.0',
-      '@vaultcompass/dep-guard@0.6.0',
-      '@vaultcompass/vault-guard@1.7.0',
+      '@vaultcompass/dep-guard@0.7.0',
+      '@vaultcompass/vault-guard@1.8.0',
       '@vaultcompass/intent-guard@1.5.2',
       'audit',
       'signatures',
@@ -575,7 +575,7 @@ describe('action.yml installs the gates outside the tree', () => {
   it('carries an overridden version through to the package specifier', () => {
     const { argv } = runInstall({ VAULT_GUARD_VERSION: '1.9.2' });
     expect(argv).toContain('@vaultcompass/vault-guard@1.9.2');
-    expect(argv).not.toContain('@vaultcompass/vault-guard@1.7.0');
+    expect(argv).not.toContain('@vaultcompass/vault-guard@1.8.0');
   });
 
   it('prepends the install bin directory to PATH rather than calling it by path', () => {
@@ -852,9 +852,9 @@ describe('action.yml refuses a pull request that pins a gate backward', () => {
       ['INTENT_GUARD_VERSION', '1.10.0'],
       ['INTENT_GUARD_VERSION', '2.0.0'],
       ['INTENT_GUARD_VERSION', '10.0.0'],
-      ['DEP_GUARD_VERSION', '0.6.1'],
+      ['DEP_GUARD_VERSION', '0.7.1'],
       ['DEP_GUARD_VERSION', '0.10.0'],
-      ['VAULT_GUARD_VERSION', '1.7.1'],
+      ['VAULT_GUARD_VERSION', '1.8.1'],
       ['VAULT_GUARD_VERSION', '1.10.0'],
       ['CONDUCTOR_VERSION', '0.4.1'],
       ['CONDUCTOR_VERSION', '0.10.0'],
