@@ -811,6 +811,18 @@ describe('action.yml refuses a pull request that pins a gate backward', () => {
     expect(run.stderr).toContain('1.5.2');
   });
 
+  it('refuses a same-minor pin with a lower patch than the tag ships', () => {
+    // pin_not_backward's third arm: pin_major == tag_major, pin_minor ==
+    // tag_minor, and pin_patch below tag_patch. Every case above this one
+    // drives the major or minor comparison; intent-guard is the only one of
+    // the four whose tag constant (TAG_INTENT_GUARD) has a non-zero patch
+    // today, 1.5.2, so it is the only input that can reach this arm at all.
+    const run = runValidate({ INTENT_GUARD_VERSION: '1.5.1' }, { GITHUB_BASE_REF: 'main' });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('1.5.1');
+    expect(run.stderr).toContain(tagVersion(TAG_CONSTANTS['intent-guard-version']));
+  });
+
   it('leaves push runs alone, where GITHUB_BASE_REF is not set', () => {
     // The event test is GITHUB_BASE_REF being non-empty, which is exactly how
     // the run step decides to pass `--trust-base`. With it unset the same low
@@ -927,5 +939,56 @@ describe('action.yml refuses a pull request that pins a gate backward', () => {
     expect(code.slice(0, gateAt)).not.toMatch(/^\s*check_pin /m);
     // Compared component by component, never as text.
     expect(code).not.toMatch(/"\$pin_value" *[<>]/);
+  });
+});
+
+/**
+ * The shape check refuses a leading zero on any of the three components.
+ *
+ * npm's specifier parser reads `01.2.3` and `0.6.00` as something it cannot
+ * parse as a version at all, and falls back to reading them as a DIST-TAG,
+ * which hands the registry the choice this check exists to take away from
+ * it. A charset of three plain `[0-9]+` groups lets every one of those
+ * through; the sibling scanners vault-guard and dep-guard both refuse them
+ * with `^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`, and conductor's
+ * own shape check has to match, since it feeds these same four inputs
+ * straight into `npm install -g @vaultcompass/...@<version>`.
+ *
+ * The shape check runs before the event test, so it refuses a leading zero
+ * on a push build as readily as on a pull request; none of these cases sets
+ * GITHUB_BASE_REF.
+ */
+describe('action.yml refuses a leading zero in any of the four version inputs', () => {
+  it('refuses a leading zero on the first component, for every one of the four', () => {
+    for (const input of VERSION_INPUTS) {
+      const run = runValidate({ [VERSION_VARS[input]]: '01.2.3' });
+      expect([input, run.status]).not.toEqual([input, 0]);
+      expect(run.stderr).toContain(input);
+      expect(run.stderr).toContain('01.2.3');
+      expect(run.stderr).toMatch(/leading zero/);
+    }
+  });
+
+  it('refuses a leading zero on the minor or patch component too', () => {
+    for (const value of ['0.06.0', '0.6.00']) {
+      const run = runValidate({ INTENT_GUARD_VERSION: value });
+      expect([value, run.status]).not.toEqual([value, 0]);
+      expect(run.stderr).toMatch(/leading zero/);
+    }
+  });
+
+  it('still accepts a component that is a genuine single zero, like the shipped defaults', () => {
+    // The fix must refuse a leading zero on a multi-digit component without
+    // refusing a lone zero digit: 0.4.0, 0.7.0 and 1.5.2-shaped versions all
+    // carry one or more single-zero components and have to keep passing.
+    for (const input of VERSION_INPUTS) {
+      const shipped = String(action.inputs?.[input]?.default ?? '');
+      expect([input, shipped, runValidate({ [VERSION_VARS[input]]: shipped }).status]).toEqual([
+        input,
+        shipped,
+        0,
+      ]);
+    }
+    expect(runValidate({ INTENT_GUARD_VERSION: '10.20.30' }).status).toBe(0);
   });
 });

@@ -14,6 +14,18 @@ likely to be a version bump someone forgot to commit than a deliberate one.
 
 ## [Unreleased]
 
+- Fixed the validate step's version-shape check to refuse a leading zero
+  (`01.2.3`, `0.6.00`), matching the sibling scanners' regex; npm reads a
+  value it cannot parse as a version as a dist-tag instead, which is the
+  exact hole this check exists to close.
+- Added a test covering the same-minor, lower-patch backward-pin refusal
+  (the W3 patch-comparison arm), the only one of the four version inputs
+  reachable through it being intent-guard.
+- README: added a canonical `uses: vaultcompasshq/conductor@v0.4.4` example
+  and updated the other consumer-facing examples to match; `uses: ./` reads
+  `action.yml` from the caller's own tree and is not a form a real consumer
+  should copy.
+
 ## [0.4.4] - 2026-09-19
 
 **An action-only release. The tag moves; the npm package does not.**
