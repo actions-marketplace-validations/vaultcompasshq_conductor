@@ -550,12 +550,19 @@ Five properties, each load-bearing:
   spelling the gates step uses. A step-level entry wins over a job-level one, and
   `github.base_ref` is read out of the event payload rather than out of anything
   the workflow author writes, so the value cannot come from the workflow file.
-  Second, as a line of defence the step does not depend on, GitHub documents that
-  the default `GITHUB_*` and `RUNNER_*` variables cannot be overwritten and that
-  such an assignment is ignored
+  Second, as a further line of defence the step does not depend on, GitHub
+  documents that the default `GITHUB_*` and `RUNNER_*` variables cannot be
+  overwritten and that such an assignment is ignored
   (https://docs.github.com/en/actions/reference/workflows-and-actions/variables).
-  The guarantee is recorded here rather than relied on: if it ever failed, the
-  declared form is still immune and a bare read of the default would not be.
+  The guarantee is recorded here as a second, separate line of defence, not as
+  the sole control either form is depended on. The declared form is defense in
+  depth and is stronger than a bare read of the runner default, because its
+  value comes from the event payload rather than from anything a workflow
+  author can write, but it is not absolute immunity: a job-level
+  `env: BASH_ENV: <a file>` that runs `unset GITHUB_BASE_REF` would still
+  defeat it, because BASH_ENV is sourced before the step script runs and is
+  not itself one of the GITHUB_*/RUNNER_* variables the no-overwrite guarantee
+  covers.
 - Written accept-only-if, not refuse-if, for the same reason as the npm floor:
   `[` exits 2 on a malformed or out-of-range comparison and an `if` reads 2 as
   false, so a refuse-if shape turns an arithmetic error into permission.
