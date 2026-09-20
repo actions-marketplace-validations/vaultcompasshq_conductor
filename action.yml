@@ -59,12 +59,12 @@ inputs:
     description: >-
       The exact version of the dependency gate this action installs. Same
       rule as conductor-version.
-    default: 0.6.0
+    default: 0.7.0
   vault-guard-version:
     description: >-
       The exact version of the secrets gate this action installs. Same rule
       as conductor-version.
-    default: 1.7.0
+    default: 1.8.0
   intent-guard-version:
     description: >-
       The exact version of the intent gate this action installs. Same rule as
@@ -234,10 +234,10 @@ runs:
         TAG_CONDUCTOR_MINOR=4
         TAG_CONDUCTOR_PATCH=0
         TAG_DEP_GUARD_MAJOR=0
-        TAG_DEP_GUARD_MINOR=6
+        TAG_DEP_GUARD_MINOR=7
         TAG_DEP_GUARD_PATCH=0
         TAG_VAULT_GUARD_MAJOR=1
-        TAG_VAULT_GUARD_MINOR=7
+        TAG_VAULT_GUARD_MINOR=8
         TAG_VAULT_GUARD_PATCH=0
         TAG_INTENT_GUARD_MAJOR=1
         TAG_INTENT_GUARD_MINOR=5

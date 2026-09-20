@@ -666,8 +666,8 @@ jobs:
           # refuses a pin below what its tag ships, and the four lines can be
           # left out entirely to take that tag's own versions.
           conductor-version: 0.4.0
-          dep-guard-version: 0.6.0
-          vault-guard-version: 1.7.0
+          dep-guard-version: 0.7.0
+          vault-guard-version: 1.8.0
           intent-guard-version: 1.5.2
       - uses: github/codeql-action/upload-sarif@v3
         # Always: the log is most worth having on the run that failed.

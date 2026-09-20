@@ -14,6 +14,12 @@ likely to be a version bump someone forgot to commit than a deliberate one.
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-09-19
+
+**An action-only release. The tag moves; the npm package does not.**
+`@vaultcompass/conductor` stays at 0.4.0 on npm and the action's
+`conductor-version` default stays `0.4.0`.
+
 ### Added
 
 - **A `pr-comment` opt-in input on the Action**, for an advisory
@@ -45,6 +51,26 @@ likely to be a version bump someone forgot to commit than a deliberate one.
   (`scripts/tests/pr-comment-smoke.test.mjs`) this surface needs before a
   release, since the offline suite's `gh` shim cannot distinguish `-f` from
   `-F`.
+
+### Changed
+
+- **The umbrella now installs `vault-guard` 1.8.0 and `dep-guard` 0.7.0 by
+  default, up from 1.7.0 and 0.6.0.** Both releases fail closed on an empty
+  scan rather than reporting one that never ran as a clean pass. Their own
+  `TAG_VAULT_GUARD_*` and `TAG_DEP_GUARD_*` constants in `action.yml` move
+  in lockstep with the defaults, since those constants are what the
+  pull-request backward-pin rule measures a pin against. `intent-guard-version`
+  stays at `1.5.2` and `conductor-version` stays at `0.4.0`; neither changes
+  in this release.
+
+  **The consumer cost.** On a pull request, the backward-pin rule (added in
+  0.4.3) now refuses `vault-guard-version` below `1.8.0` or `dep-guard-version`
+  below `0.7.0`, the same as it already refused older pins of the other two
+  inputs. A workflow carrying either of those lines below the new floor is
+  refused rather than run, because this tag ships the newer scanners and the
+  rule will not let a pull request judge itself with an older one. The
+  migration is to remove the input, whose default is the version this tag
+  ships, or to raise it to `1.8.0` / `0.7.0` or newer.
 
 ## [0.4.3] - 2026-09-18
 
