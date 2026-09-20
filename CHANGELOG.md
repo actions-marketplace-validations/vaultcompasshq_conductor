@@ -25,6 +25,31 @@ likely to be a version bump someone forgot to commit than a deliberate one.
   and updated the other consumer-facing examples to match; `uses: ./` reads
   `action.yml` from the caller's own tree and is not a form a real consumer
   should copy.
+- **A pull-request run against a base ref with no `.guardrails.yaml` now
+  reports could-not-run through the same path as any other unusable trust
+  base**, with the reason in the text report (stdout) rather than only on
+  stderr, a `verdict: exit 2` line, and the head's own gates named as
+  `DID NOT RUN (preparation-failed)`. This case already exited 2 before this
+  change, but through an uncaught `PolicyError` that printed one line to
+  stderr and left stdout (and the SARIF file) empty, so a run in advisory
+  mode read as a red step with nothing useful attached, and the `pr-comment`
+  step had no report text to post. Two consumer teams hit exactly this on
+  their first pull request, before `conductor init` had landed on their base
+  branch (see FINDINGS.md, 2026-09-20). This is a judgment call about which
+  side of the line a case sits on: a base ref that DOES carry a policy file
+  in which every gate is disabled or deferred is a decision someone wrote
+  down on purpose and still reports a clean exit 0; only an ABSENT config on
+  the base is treated as could-not-run.
+- **`action.yml` now shallow-fetches the trust base for a pull-request run**
+  when the checkout does not already carry it (the `actions/checkout`
+  default is `fetch-depth: 1`, the head commit alone), so a consumer no
+  longer has to add their own fetch step to make `origin/<base>` resolve.
+  The fetch is a no-op when the ref already resolves, never fails the job
+  when it cannot reach the remote (a `::warning::` names the exact command
+  to add instead), and uses an explicit `<ref>:refs/remotes/origin/<ref>`
+  refspec rather than a bare `git fetch origin <ref>`, which only updates
+  `FETCH_HEAD` and would have left the ref just as unresolvable on a
+  single-branch checkout.
 
 ## [0.4.4] - 2026-09-19
 

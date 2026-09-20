@@ -601,6 +601,62 @@ runs:
         if [ -n "$TRUST_BASE" ]; then
           ARGS+=(--trust-base "$TRUST_BASE")
         elif [ -n "${GITHUB_BASE_REF:-}" ]; then
+          # A SHALLOW, ONE-COMMIT FETCH OF JUST THE BASE BRANCH, so a
+          # shallow-checkout consumer does not get a spurious trust-base miss.
+          #
+          # THE HOLE THIS CLOSES. The default actions/checkout fetches
+          # depth: 1 -- the head commit alone -- so on that default,
+          # origin/$GITHUB_BASE_REF is not in the checkout at all and
+          # conductor's own git rev-parse / git show reads refuse it as a
+          # ref that does not resolve. That is the correct fail-closed
+          # answer to a ref that is genuinely unreachable, but to a consumer
+          # who never asked for the base branch it reads as "conductor is
+          # broken" rather than "the checkout does not carry it". One real
+          # consumer team hit exactly this and worked around it by adding
+          # their own fetch step; this closes the gap here instead, so every
+          # consumer does not have to discover the same workaround.
+          #
+          # GUARDED SO IT IS A NO-OP WHEN THE REF ALREADY RESOLVES: a
+          # consumer whose checkout already carries the base ref (a deeper
+          # fetch-depth, or a previous step that fetched it) pays nothing
+          # extra, and this never fetches more than once regardless of how
+          # many gates run.
+          #
+          # DEPTH 1 IS DELIBERATE AND IS NOT THE SAME FETCH THE INTENT GATE
+          # MAY WANT. conductor's own reads of a trust base (git show
+          # <ref>:./.guardrails.yaml, git rev-parse <ref>) never walk
+          # history: they read the one commit's tree, so its tip is enough.
+          # intent-guard's own change-set diff can need the merge base
+          # instead, which a depth-1 fetch of the branch tip does not carry
+          # once the branch has moved since the pull request forked from it;
+          # a consumer whose intent gate needs that still wants
+          # fetch-depth: 0 on their own checkout step. This fetch exists only
+          # to unblock conductor's OWN policy read, not to substitute for
+          # full history.
+          #
+          # NEVER HARD-FAILS. Both branches below are guarded by `if`, which
+          # `set -eu` does not trip on: a fetch that cannot succeed (no
+          # credentials persisted from checkout, no network reachable to
+          # origin, a fork pull_request's read-only token, or any other
+          # reason) is reported as a clear warning naming the exact command
+          # to add, and the run continues into conductor's own trust-base
+          # handling, which already fails closed with its own explanation.
+          # THE REFSPEC IS DELIBERATE, not just the ref name. `git fetch
+          # origin <ref>` alone only updates FETCH_HEAD -- it never creates
+          # or moves refs/remotes/origin/<ref> unless the remote's configured
+          # fetch refspec already covers that branch, which a single-branch
+          # shallow checkout's does not. Handing conductor
+          # --trust-base "origin/$GITHUB_BASE_REF" after a fetch that only
+          # touched FETCH_HEAD leaves the exact same unresolvable ref this
+          # step exists to fix. The explicit src:dst refspec is what actually
+          # creates the remote-tracking ref conductor is about to be asked
+          # to read.
+          if ! git rev-parse --verify --quiet "origin/$GITHUB_BASE_REF" >/dev/null 2>&1; then
+            if ! git fetch --depth=1 origin "$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF" >/dev/null 2>&1; then
+              printf '::warning::conductor: origin/%s is not in this checkout and could not be fetched. Add a step before this action that runs: git fetch --depth=1 origin %s:refs/remotes/origin/%s\n' \
+                "$GITHUB_BASE_REF" "$GITHUB_BASE_REF" "$GITHUB_BASE_REF"
+            fi
+          fi
           ARGS+=(--trust-base "origin/$GITHUB_BASE_REF")
         fi
         if [ -n "$SPEC" ]; then

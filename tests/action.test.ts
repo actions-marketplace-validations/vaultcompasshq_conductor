@@ -228,6 +228,180 @@ describe('action.yml enters pull-request mode', () => {
 });
 
 /**
+ * The base-ref fetch, run for real against a real (if tiny) git remote.
+ *
+ * A shallow checkout is what actions/checkout gives a consumer by default
+ * (fetch-depth: 1, the head commit alone), so origin/$GITHUB_BASE_REF is
+ * simply not in that checkout and conductor's own git reads refuse it as a
+ * ref that does not resolve. One real consumer team hit exactly this and
+ * worked around it with their own fetch step; this suite runs the gates
+ * step's actual script -- not a regex over it -- against a real shallow
+ * clone, with `conductor` replaced by a no-op stub and `git` replaced by a
+ * pass-through shim that also logs every `fetch` invocation, so "did it
+ * fetch" and "did it skip the fetch" are both answered by what git actually
+ * did rather than by a pattern match on the YAML.
+ */
+describe('action.yml shallow-fetches the trust base for a pull-request run', () => {
+  function git(args: string[], cwd: string): string {
+    const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    if (result.status !== 0) {
+      throw new Error(`git ${args.join(' ')} in ${cwd} failed: ${result.stderr ?? result.stdout ?? ''}`);
+    }
+    return result.stdout ?? '';
+  }
+
+  function resolves(ref: string, cwd: string): boolean {
+    return spawnSync('git', ['rev-parse', '--verify', '--quiet', ref], { cwd, encoding: 'utf8' })
+      .status === 0;
+  }
+
+  /**
+   * A bare "origin" carrying two branches, "main" (the base) and "feature"
+   * (the head, one commit ahead), plus a shallow, single-branch clone of
+   * "feature" only. That last part is the actions/checkout default shape on
+   * a pull_request event: fetch-depth 1, the head branch alone. origin/main
+   * does not resolve in the clone until something fetches it.
+   */
+  function makeShallowCheckout(): { workdir: string; origin: string } {
+    const origin = tempDir();
+    git(['init', '--quiet', '--bare', '-b', 'main'], origin);
+
+    const seed = tempDir();
+    git(['clone', '--quiet', origin, seed], os.tmpdir());
+    git(['config', 'user.email', 'test@example.com'], seed);
+    git(['config', 'user.name', 'Test'], seed);
+    writeFileSync(path.join(seed, 'file.txt'), 'base\n');
+    git(['add', '-A'], seed);
+    git(['commit', '--quiet', '-m', 'base'], seed);
+    git(['push', '--quiet', 'origin', 'main'], seed);
+
+    git(['checkout', '--quiet', '-b', 'feature'], seed);
+    writeFileSync(path.join(seed, 'file.txt'), 'feature\n');
+    git(['add', '-A'], seed);
+    git(['commit', '--quiet', '-m', 'feature'], seed);
+    git(['push', '--quiet', 'origin', 'feature'], seed);
+
+    const workdir = tempDir();
+    git(
+      ['clone', '--quiet', '--depth', '1', '--branch', 'feature', '--no-tags', origin, workdir],
+      os.tmpdir()
+    );
+    git(['config', 'user.email', 'test@example.com'], workdir);
+    git(['config', 'user.name', 'Test'], workdir);
+
+    return { workdir, origin };
+  }
+
+  /**
+   * Runs the gates step's own script, `conductor` replaced by a stub that
+   * exits 0 without reading its arguments (the fetch guard runs before that
+   * call, and nothing here is about what conductor does with the result),
+   * and `git` replaced by a pass-through shim that also appends every
+   * `fetch` invocation's argument line to `fetchLogPath`.
+   */
+  function runGatesScript(
+    workdir: string,
+    overrides: Record<string, string> = {}
+  ): { status: number; output: string; fetchLog: string[] } {
+    const bin = tempDir();
+    const conductorShim = path.join(bin, 'conductor');
+    writeFileSync(conductorShim, '#!/bin/sh\nexit 0\n');
+    chmodSync(conductorShim, 0o755);
+
+    const fetchLogPath = path.join(tempDir(), 'git-fetch-calls.txt');
+    writeFileSync(fetchLogPath, '');
+    const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+    const gitShim = path.join(bin, 'git');
+    writeFileSync(
+      gitShim,
+      `#!/bin/sh\nif [ "$1" = "fetch" ]; then printf '%s\\n' "$*" >> ${JSON.stringify(
+        fetchLogPath
+      )}; fi\nexec ${JSON.stringify(realGit)} "$@"\n`
+    );
+    chmodSync(gitShim, 0o755);
+
+    const githubOutput = path.join(tempDir(), 'github-output.txt');
+    writeFileSync(githubOutput, '');
+
+    const result = spawnSync('bash', ['-c', gatesScript], {
+      cwd: workdir,
+      encoding: 'utf8',
+      env: {
+        PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+        GITHUB_OUTPUT: githubOutput,
+        GITHUB_EVENT_PATH: '',
+        GITHUB_BASE_REF: 'main',
+        GITHUB_HEAD_REF: 'feature',
+        BASE_REF: '',
+        TRUST_BASE: '',
+        SPEC: '',
+        STAGE: 'ci',
+        OUTPUT: 'conductor.sarif',
+        WORKDIR: '.',
+        ...overrides,
+      },
+    });
+
+    return {
+      status: result.status ?? -1,
+      output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
+      fetchLog: readFileSync(fetchLogPath, 'utf8')
+        .split('\n')
+        .filter((line) => line.length > 0),
+    };
+  }
+
+  it('fetches origin/<base> when the shallow checkout does not carry it', () => {
+    const { workdir } = makeShallowCheckout();
+    expect(resolves('origin/main', workdir)).toBe(false);
+
+    const run = runGatesScript(workdir);
+
+    expect(run.status).toBe(0);
+    expect(run.fetchLog.length).toBe(1);
+    expect(run.fetchLog[0]).toMatch(/--depth=1/);
+    expect(run.fetchLog[0]).toMatch(/origin/);
+    expect(run.fetchLog[0]).toMatch(/main/);
+    // The whole point: after the step runs, the ref conductor is about to be
+    // handed as --trust-base actually resolves.
+    expect(resolves('origin/main', workdir)).toBe(true);
+  });
+
+  it('does not fetch when origin/<base> already resolves in the checkout', () => {
+    const { workdir, origin } = makeShallowCheckout();
+    // What a deeper fetch-depth, or a prior step, leaves behind: the base
+    // branch already in the checkout before this step ever runs. The
+    // explicit src:dst refspec is required here for the same reason the
+    // step's own fetch needs one: this is a single-branch checkout, so a
+    // bare `git fetch origin main` only updates FETCH_HEAD and never
+    // creates the origin/main tracking ref this precondition needs.
+    git(['fetch', '--quiet', 'origin', 'main:refs/remotes/origin/main'], workdir);
+    expect(resolves('origin/main', workdir)).toBe(true);
+    void origin;
+
+    const run = runGatesScript(workdir);
+
+    expect(run.status).toBe(0);
+    expect(run.fetchLog).toEqual([]);
+  });
+
+  it('warns with the exact remedy command rather than hard-failing when the fetch cannot succeed', () => {
+    const { workdir } = makeShallowCheckout();
+    // A remote that cannot be reached, standing in for no credentials, no
+    // network, or a fork pull_request's read-only token: whatever the real
+    // cause, the step must not abort over it, and must name the fix.
+    git(['remote', 'set-url', 'origin', path.join(workdir, 'no-such-remote')], workdir);
+
+    const run = runGatesScript(workdir);
+
+    // Never a hard failure: the stub conductor still ran and exited 0.
+    expect(run.status).toBe(0);
+    expect(run.output).toMatch(/::warning::/);
+    expect(run.output).toMatch(/git fetch --depth=1 origin main/);
+  });
+});
+
+/**
  * The install, which is the whole of 0.4.0's answer to the head-controlled
  * program.
  *
