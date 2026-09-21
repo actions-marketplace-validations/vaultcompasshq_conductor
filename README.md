@@ -732,6 +732,18 @@ runs whatever its author pushes to it next. Pin every third-party action by
 commit digest in a workflow you actually run, the way this repository's own
 workflows do.
 
+### Running the gates as an advisory check
+
+To run the gates without blocking a merge, set `continue-on-error: true` on the
+`conductor` step and leave the check not required in branch protection. Set a
+step `timeout-minutes` as well. `continue-on-error` swallows a failing exit
+code, but it does not bound a step that hangs: on a required job a stuck run
+still drags the job to its own job-level limit and blocks the very merge the
+advisory setting was meant to leave alone. The Action already caps each gate's
+own subprocess at 120 seconds and reports a gate that exceeds it as
+could-not-run, so a step `timeout-minutes` is an outer bound around the whole
+run rather than the primary control.
+
 ### The report as a pull request comment
 
 **Built in, opt-in.** This matters most for an advisory job: a `pull_request`
