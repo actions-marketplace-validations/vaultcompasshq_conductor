@@ -313,7 +313,7 @@ of its own "beyond conductor/gate-missing". That was false and always had
 been: the union at src/normalize.ts:705-708 has three members, and the
 README named `conductor/gate-failed` elsewhere in the same document.
 Three, plus the two normalization diagnostics, is the number, and both
-documents now list all five (AGENTS.md:12-16, README.md:684-688).
+documents now list all five (AGENTS.md:12-16, README.md:980-984).
 
 The README half of that pair was pointing at the wrong place and had been
 since it was written. It named the paragraph about mirroring the Action's

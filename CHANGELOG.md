@@ -14,6 +14,8 @@ likely to be a version bump someone forgot to commit than a deliberate one.
 
 ## [Unreleased]
 
+- Pinned the Action's npm floor (10.5.2), version-shape regex, `--ignore-scripts` install, and `npm audit signatures` step in a drift check, so a quieter edit of those lines goes red here. The hygiene blocklist comment now names all four family repositories. Adopter feedback is linked from the README, and the invariant citation for the umbrella's own finding ids now points at README.md:980-984.
+
 - **The text report now carries conductor's own version, as its first
   line** (`conductor <version>`), sourced from the same `package.json`
   version the SARIF renderer already carries. This report is also the
