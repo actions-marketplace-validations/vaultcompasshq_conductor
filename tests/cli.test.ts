@@ -1169,6 +1169,26 @@ describe('pull-request mode through the CLI', () => {
     expect(result.stdout).toMatch(/DID NOT RUN \(preparation-failed\)/);
   });
 
+  it('shrinks to three lines under --compact-on-refusal, on the same could-not-run adopter gap', () => {
+    // The pull-request-comment step's own shape: an adopter with no policy
+    // on the base ref at all otherwise gets a full sticky comment every push
+    // whose whole content is "refused, nothing checked".
+    const { repo, bin } = attackRepo({ basePolicy: null });
+
+    const result = runCli(
+      repo,
+      ['run', '--staged', '--trust-base', 'base', '--verbose', '--compact-on-refusal'],
+      bin
+    );
+
+    expect(result.status).toBe(2);
+    const lines = result.stdout.trimEnd().split('\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatch(/^conductor \d+\.\d+\.\d+$/);
+    expect(lines[1]).toMatch(/^verdict: exit 2/);
+    expect(lines[2]).toMatch(/Run the gates/);
+  });
+
   it('stays a clean exit 0 when the base policy exists but the user switched every gate off', () => {
     // The judgment call this PR has to make explicit: CONFIG ABSENT on the
     // base (nobody has finished setup yet, a discovered-empty) is

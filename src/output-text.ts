@@ -536,6 +536,32 @@ export interface TextOptions {
    * wants their own terminal to be is not that.
    */
   verbose?: boolean;
+
+  /**
+   * The umbrella's own package version, printed as the first line of the
+   * full report. This text report is also the pull-request comment body,
+   * and without this line nothing on it says which conductor produced it.
+   *
+   * Left out of the one-line clean summary on purpose: that line is kept to
+   * one line by design, and the version is not the fact a clean run needs to
+   * lead with. Omitted entirely (no line at all) when no version is given,
+   * so a caller that does not pass one sees the same report as before.
+   */
+  version?: string;
+
+  /**
+   * Renders three lines instead of the full report when the trust base was
+   * refused and no gate ran: the version, the could-not-run reason (the
+   * same sentence the verdict already carries), and a pointer at the step
+   * log.
+   *
+   * Built for the pull-request-comment step. Its whole point is otherwise a
+   * full sticky comment whose only content is "the trust base was refused,
+   * nothing was checked" -- true, but not worth the ceremony of the full
+   * per-gate report on every push. Every other run is unaffected: this only
+   * fires when the trust base was actually refused, whatever --verbose says.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -728,6 +754,15 @@ function summaryLine(result: RunResult): string {
 export function renderText(result: RunResult, options: TextOptions = {}): string {
   const refusal = refusalLines(result);
 
+  if (options.compact === true && refusal.length > 0) {
+    const lines: string[] = [
+      ...(options.version === undefined ? [] : [`conductor ${options.version}`]),
+      verdict(result),
+      'See the "Run the gates" step log for the full report.',
+    ];
+    return `${lines.join('\n')}\n`;
+  }
+
   if (refusal.length === 0 && !options.verbose && isFullyClean(result)) {
     return `${summaryLine(result)}\n`;
   }
@@ -741,6 +776,7 @@ export function renderText(result: RunResult, options: TextOptions = {}): string
   // different questions, so two numbers, and the section headers and the
   // "not enforced" lines are what connect them.
   const lines: string[] = [
+    ...(options.version === undefined ? [] : [`conductor ${options.version}`]),
     ...refusal,
     ...(refusal.length === 0 ? [] : ['']),
     `conductor run: ${result.gates.length} gate(s), ${result.findings.length} finding(s)`,

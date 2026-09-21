@@ -99,6 +99,7 @@ interface RunCliOptions {
   spec?: string;
   output?: string;
   verbose?: boolean;
+  compactOnRefusal?: boolean;
 }
 
 /**
@@ -384,6 +385,10 @@ export function buildProgram(): Command {
       'print the full per-gate report even when the run is clean. A clean run prints one summary line by default, because a pre-commit hook that prints a screenful on every commit is a hook a team switches off. Text output only; SARIF is unaffected.'
     )
     .option(
+      '--compact-on-refusal',
+      'when the trust base was refused and no gate ran, print three lines instead of the full refusal report: the version, the could-not-run reason, and a pointer at the step log. Built for the pull-request-comment step; every other run is unaffected, whatever --verbose says. Text output only; SARIF is unaffected.'
+    )
+    .option(
       '--gate <role>',
       'restrict the run to this role; repeatable',
       (value: string, previous: string[] = []) => [...previous, value]
@@ -426,7 +431,11 @@ export function buildProgram(): Command {
         const rendered =
           format === 'sarif'
             ? `${renderSarif(result, pkg.version)}\n`
-            : renderText(result, { verbose: Boolean(options.verbose) });
+            : renderText(result, {
+                verbose: Boolean(options.verbose),
+                version: pkg.version,
+                compact: Boolean(options.compactOnRefusal),
+              });
 
         if (options.output === undefined) {
           process.stdout.write(rendered);

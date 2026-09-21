@@ -773,7 +773,12 @@ a re-run find and update that same comment, so a push does not pile up a new
 comment every time, the way the manual recipe below does. It runs on a
 `pull_request` or `pull_request_target` event only, and it runs whether the
 gates step passed or failed, since a blocking run is the one an advisory
-check most needs a developer to actually see.
+check most needs a developer to actually see. Every line carries the version
+of conductor that produced it, and when the trust base was refused and no
+gate ran at all, the comment is three lines rather than the full report: the
+version, the could-not-run reason, and a pointer at the "Run the gates" step
+log, so an adopter with no policy on the base ref yet does not get the full
+sticky comment on every push.
 
 **It is a no-op on a pull request from a fork.** The default `GITHUB_TOKEN`
 there is read-only regardless of the `pull-requests: write` permission you
