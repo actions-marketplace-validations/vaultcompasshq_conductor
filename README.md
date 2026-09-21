@@ -89,6 +89,7 @@ conductor: clean, nothing blocked. 2 gate(s) ran: dependencies (dep-guard), secr
 A commit with a staged credential in it prints the full report and exits 1:
 
 ```
+conductor 0.4.5
 conductor run: 2 gate(s), 1 finding(s)
 
 dependencies  dep-guard 0.2.1  exit 0  251ms  via dep-guard on path
@@ -270,6 +271,12 @@ proceeds normally without mentioning them.
   report nobody can read.
 - `--verbose` prints the full per-gate report even when the run is clean.
   Text output only; the SARIF log never changes shape with it.
+- `--compact-on-refusal` shrinks the report to the version, the verdict and
+  the refusal reason when the trust base was refused and no gate ran,
+  instead of the full per-gate report. Built for the pull-request-comment
+  step. It has no effect on a run that was not refused, whatever `--verbose`
+  says. Text output only; it has no effect on the SARIF log and never
+  changes the exit code.
 - `--gate <role>`, repeatable. A gate the policy file enables and this flag
   leaves out is named as excluded, on one line in the text report and as a
   `conductor/gate-excluded` notification in the SARIF log's `conductor` run.
@@ -744,6 +751,54 @@ own subprocess at 120 seconds and reports a gate that exceeds it as
 could-not-run, so a step `timeout-minutes` is an outer bound around the whole
 run rather than the primary control.
 
+A complete copy-paste job, rather than the one step above in isolation:
+
+```yaml
+name: guardrails-advisory
+on: pull_request
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        continue-on-error: true
+        with:
+          node-version: '22.11.0'
+      - name: Fetch the base ref
+        continue-on-error: true
+        run: git fetch origin "$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF"
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+      - id: conductor
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: vaultcompasshq/conductor@v0.4.5
+        with:
+          pr-comment: true
+```
+
+Every fallible step above, the checkout, the node setup, the explicit fetch,
+and the conductor step itself, carries `continue-on-error: true`, because a
+required job must never go red over an advisory step that hung or failed.
+`action.yml` already shallow-fetches the trust base itself as of 0.4.5 when
+the checkout does not already carry it (see the changelog entry for that
+version), so the explicit "Fetch the base ref" step above is belt and
+braces, not a requirement; it is here so the recipe still resolves the base
+ref on an action version that predates that self-fetch. `pr-comment: true`
+is what makes the advisory finding visible at all: a `pull_request` check
+that is not required posts nothing anywhere else a developer would look, so
+without it the run's only trace is a green-looking step nobody opens. See
+"The report as a pull request comment" below for what that input needs and
+what it does on a fork.
+
 ### The report as a pull request comment
 
 **Built in, opt-in.** This matters most for an advisory job: a `pull_request`
@@ -773,7 +828,13 @@ a re-run find and update that same comment, so a push does not pile up a new
 comment every time, the way the manual recipe below does. It runs on a
 `pull_request` or `pull_request_target` event only, and it runs whether the
 gates step passed or failed, since a blocking run is the one an advisory
-check most needs a developer to actually see.
+check most needs a developer to actually see. The first line of every
+comment carries the version of conductor that produced it, and when the
+trust base was refused and no gate ran at all, the comment shrinks to the
+version, the verdict, and the refusal reason (with its remedy, when one
+applies) rather than the full per-gate report, so an adopter with no policy
+on the base ref yet does not get a full sticky comment whose only content is
+"refused, nothing checked" on every push.
 
 **It is a no-op on a pull request from a fork.** The default `GITHUB_TOKEN`
 there is read-only regardless of the `pull-requests: write` permission you

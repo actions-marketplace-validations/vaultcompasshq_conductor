@@ -14,6 +14,31 @@ likely to be a version bump someone forgot to commit than a deliberate one.
 
 ## [Unreleased]
 
+- **The text report now carries conductor's own version, as its first
+  line** (`conductor <version>`), sourced from the same `package.json`
+  version the SARIF renderer already carries. This report is also the
+  pull-request comment body, and until now nothing on it said which
+  conductor produced it. Left off the one-line clean summary on purpose;
+  that line stays exactly one line.
+- **The `pr-comment` step's text run now takes `--compact-on-refusal`.**
+  When the trust base was refused and no gate ran, the comment shrinks to
+  the version, the verdict, and every refusal detail line the full report
+  would have printed for this case (the reason and, when the base ref
+  carries no policy file at all, the remedy that reason names), instead of
+  the full per-gate report. There is no pointer at a step log: a fork's
+  read-only token cannot even show the commenter that log, so the reason
+  has to be readable on the comment itself. An adopter with no policy on
+  the base ref yet otherwise got a full sticky comment on every push whose
+  entire content was "refused, nothing checked". The new `--compact-on-refusal`
+  CLI flag is a no-op on any run that was not refused; exit codes, verdict
+  semantics, and when the comment posts are unchanged.
+- **README: the advisory-check section now includes a complete copy-paste
+  job** (checkout, setup-node, an explicit fetch of the base ref, and the
+  conductor step with `pr-comment: true`), with `continue-on-error: true` on
+  every fallible step so a required job never goes red over a hung or failed
+  advisory step, and a note that 0.4.5 already self-fetches the base so the
+  explicit fetch step is belt and braces rather than a requirement.
+
 ## [0.4.5] - 2026-09-20
 
 **A package release. The tag and the package converge.**

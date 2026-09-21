@@ -1169,6 +1169,34 @@ describe('pull-request mode through the CLI', () => {
     expect(result.stdout).toMatch(/DID NOT RUN \(preparation-failed\)/);
   });
 
+  it('shrinks to the version, verdict and reason under --compact-on-refusal, on the same could-not-run adopter gap', () => {
+    // The pull-request-comment step's own shape: an adopter with no policy
+    // on the base ref at all otherwise gets a full sticky comment every push
+    // whose whole content is "refused, nothing checked". The compact body
+    // still has to carry WHY, so a reader is not sent to a step log a fork's
+    // read-only token cannot even show them.
+    const { repo, bin } = attackRepo({ basePolicy: null });
+
+    const result = runCli(
+      repo,
+      ['run', '--staged', '--trust-base', 'base', '--verbose', '--compact-on-refusal'],
+      bin
+    );
+
+    expect(result.status).toBe(2);
+    const lines = result.stdout.trimEnd().split('\n');
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toMatch(/^conductor \d+\.\d+\.\d+$/);
+    expect(lines[1]).toMatch(/^verdict: exit 2/);
+    expect(lines[2]).toMatch(/refused the trust base/);
+    // The detail line the full report would have printed for this case,
+    // including the remedy: the pull request's own .guardrails.yaml is a
+    // proposal and never takes effect until it lands on the base branch.
+    expect(lines[3]).toMatch(/No \.guardrails\.yaml on "base"/);
+    expect(lines[3]).toMatch(/is a proposal/);
+    expect(result.stdout).not.toMatch(/step log/i);
+  });
+
   it('stays a clean exit 0 when the base policy exists but the user switched every gate off', () => {
     // The judgment call this PR has to make explicit: CONFIG ABSENT on the
     // base (nobody has finished setup yet, a discovered-empty) is

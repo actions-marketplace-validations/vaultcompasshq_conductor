@@ -248,7 +248,7 @@ This was recorded here as a disagreement with the README, which used to
 summarise enforcement as making such a gate "a note rather than exit 2".
 That was true of the exit code and false of the published log. The README
 was the wrong one and now says the same thing this section does
-(README.md:186-192), and the rule is pinned by
+(README.md:187-193), and the rule is pinned by
 tests/output-sarif.test.ts:1027, which renders an unenforced gate that
 could not run and asserts the result's level is `error` and its severity
 `critical`, with the `gate-not-enforced` notification beside it.
@@ -256,17 +256,17 @@ could not run and asserts the result's level is `error` and its severity
 The report header and the verdict deliberately count different things.
 The header counts findings across every gate, because it is an inventory
 of what follows it and a reader counting lines on screen has to arrive at
-that number (src/output-text.ts:735-747). The verdict counts only
+that number (src/output-text.ts:787-800). The verdict counts only
 enforced gates, because it answers what failed the run
 (src/output-text.ts:423-445). Two questions, two numbers.
 
 Pinned by tests/exit-codes.test.ts:52, 58, 66 and 75;
-tests/output-text.test.ts:448, 456, 463 and 468 (an unenforced gate that
+tests/output-text.test.ts:473, 481, 488 and 493 (an unenforced gate that
 blocked: the findings and their BLOCKING marker survive, the header is
-marked, and the verdict does not claim none blocked), 495, 500 and 507
+marked, and the verdict does not claim none blocked), 520, 525 and 532
 (an unenforced gate that could not run is loud, is not exit 2, and is not
-also called a gate that blocked), 538, 551 and 559 (only enforced gates
-are named as the reason and counted), and especially 579 ("lets the
+also called a gate that blocked), 563, 576 and 584 (only enforced gates
+are named as the reason and counted), and especially 604 ("lets the
 header count everything on screen while the verdict counts what failed",
 which asserts the header says 3 findings while the verdict says 2 across
 1 gate); tests/cli.test.ts:482, 498, 528 and 543, end to end through the
@@ -785,7 +785,7 @@ not make, and on a machine whose working tree sits under a symlinked mount
 the link's own entry was not being vetted at all (see `withResolvedParent`,
 src/trust-base.ts:254-257). The repository root arrives realpath'd and the
 program path did not, so the link's own spelling compared as OUTSIDE the tree
-and was skipped in silence. Pinned now by tests/cli.test.ts:1727 and 1753,
+and was skipped in silence. Pinned now by tests/cli.test.ts:1736 and 1762,
 the second of which is the one that would have caught it: the link's target
 is unchanged between the refs, so vetting only the target accepts the run.
 
@@ -907,7 +907,7 @@ pinned separately at tests/output-sarif.test.ts:1571-1698, and the
 The three additions of the fix round are pinned separately, because each of
 them is a way the mechanism above was true and the REPORT of it was not:
 
-- The refusal as its own outcome: tests/output-text.test.ts:1028-1088 (exit
+- The refusal as its own outcome: tests/output-text.test.ts:1053-1113 (exit
   2 and the reason with no gate in the inventory, the fetch-depth remedy,
   leading with it, still naming the gates there were, and never the clean
   one-line summary) and tests/output-sarif.test.ts:1710-1785 (the run
@@ -915,11 +915,11 @@ them is a way the mechanism above was true and the REPORT of it was not:
   false, the could-not-run results survive, silence when not refused). End
   to end through the CLI on a real repository at tests/cli.test.ts:1049,
   1077 and 1116, the last of which is a head policy that will not parse.
-- The program rule: tests/cli.test.ts:1210-1795, eighteen cases on real
+- The program rule: tests/cli.test.ts:1219-1804, eighteen cases on real
   repositories. All THREE attack shapes are driven BEFORE and after, so each
   refusal is measured against a run where the planted program demonstrably
   did execute rather than against an assumption that it would have. The
-  wrapper shape is at tests/cli.test.ts:1412-1578, with the two directions
+  wrapper shape is at tests/cli.test.ts:1421-1587, with the two directions
   that keep the directory rule usable rather than a ban on vendoring beside
   it: a vendored directory left entirely alone is accepted, and a change
   elsewhere in the repository refuses nothing. The mutation that matters for
@@ -1077,9 +1077,9 @@ what a hook executes. The resolution decision:
 tests/resolve.test.ts:244-363. The gate: tests/gate-runner.test.ts:591-702,
 where each case plants a marker binary under `node_modules/.bin` so "the
 other one ran" is a fact about the filesystem rather than about a `source`
-field. The reports: tests/output-text.test.ts:1090-1143 and
+field. The reports: tests/output-text.test.ts:1167-1219 and
 tests/output-sarif.test.ts:1787-1841. Through the CLI on a real repository:
-tests/cli.test.ts:1597-1620, where the same plant that 0.3.0 refused is now
+tests/cli.test.ts:1606-1629, where the same plant that 0.3.0 refused is now
 unreachable AND the real gate on PATH reports the secret it was hiding. End
 to end against the real gates: tests/dogfood.e2e.test.ts:662-776, which
 plants two marker binaries in the dogfood clone's own `node_modules/.bin`,
@@ -1395,13 +1395,13 @@ have blocked, so the two numbers would differ if any of this reached
 
 Both formats say it. One line in the text report
 (src/output-text.ts:284-289), a clause on the one-line summary of a clean
-run (src/output-text.ts:644-649), and a `conductor/gate-excluded`
+run (src/output-text.ts:674-679), and a `conductor/gate-excluded`
 notification in the umbrella's SARIF run
 (src/output-sarif.ts:600-608). A notification rather than a result by the
 discriminator below: nothing went wrong, and how much of the policy a run
 covered is a statement about the run. Pinned by
-tests/output-text.test.ts:734 (the full report names them and says
-`--gate`), 747 (the clean run's single line still names them) and 756
+tests/output-text.test.ts:759 (the full report names them and says
+`--gate`), 772 (the clean run's single line still names them) and 781
 (silence on a run that had no `--gate`, verbose or not); and by
 tests/output-sarif.test.ts:149 (a notification and not a result, at note
 level, naming the role and the flag) and 171.
@@ -2410,7 +2410,7 @@ the umbrella's report and the gate's own verdict is a defect in this run
 rather than a property of anybody's configuration.
 
 The text report answers the same question the same way, and the two must
-keep agreeing. `isFullyClean` (src/output-text.ts:570-581) forces the full
+keep agreeing. `isFullyClean` (src/output-text.ts:600-611) forces the full
 report when the umbrella has a diagnostic and does NOT force it for a
 gate's own note, for exactly this reason: the standing note that pnpm
 lockfiles do not record install-script metadata is a permanent property of
@@ -2440,9 +2440,9 @@ result id, `conductor/gate-output-unparseable`, is pinned end to end by
 tests/cli.test.ts:162, which runs the CLI over a gate whose output has
 drifted and finds that id among the umbrella run's RESULTS.
 
-In the text report, pinned by tests/output-text.test.ts:371 and 379 (an
+In the text report, pinned by tests/output-text.test.ts:396 and 404 (an
 umbrella diagnostic forces the full report and is not counted as a note)
-and 295, which is the other half and was uncited here: two of a gate's
+and 320, which is the other half and was uncited here: two of a gate's
 OWN notes leave the run clean, are counted rather than printed, and do
 not force the full report.
 
@@ -2465,15 +2465,15 @@ left marked blocking.
 ## The clean-run summary line, and what it may not swallow
 
 A fully clean run prints one line rather than a screenful
-(`summaryLine`, src/output-text.ts:604-726, reached at
-src/output-text.ts:731-733, and NOT reached when the trust base was refused,
+(`summaryLine`, src/output-text.ts:634-756, reached at
+src/output-text.ts:783-785, and NOT reached when the trust base was refused,
 which is the one thing that outranks a clean run). Twelve lines of per-gate
 detail on a commit
 that found nothing is a cost paid on every commit, and it is what makes a
 team switch a hook off.
 
 The predicate is not simply the exit code (`isFullyClean`,
-src/output-text.ts:570-581). Three extra conditions, and each one exists
+src/output-text.ts:600-611). Three extra conditions, and each one exists
 because collapsing it would swallow the only report anybody sees. A gate
 with `enforce: false` is left out of the composed code, so a run where
 such a gate blocked or could not run still exits 0. An umbrella
@@ -2483,23 +2483,23 @@ deferred" and "nothing had a contract to check" are three distinct states
 with three distinct verdict sentences, and a summary line naming no gates
 would be the exact confusion this family exists to prevent.
 
-Pinned by tests/output-text.test.ts:252, 263 and 270 (one line, none of
-the per-gate detail, and how to see the rest), 274 (`--verbose` prints
-the full report anyway), 391 (an unenforced gate that blocked forces the
-full report even though the run exits 0), 403 (so does one that could not
-run), 371 (so does an umbrella diagnostic) and 424 (a run where no gate
+Pinned by tests/output-text.test.ts:277, 288 and 295 (one line, none of
+the per-gate detail, and how to see the rest), 299 (`--verbose` prints
+the full report anyway), 416 (an unenforced gate that blocked forces the
+full report even though the run exits 0), 428 (so does one that could not
+run), 396 (so does an umbrella diagnostic) and 449 (a run where no gate
 ran at all). The half that must NOT force it, a gate's own note, is
-pinned at tests/output-text.test.ts:295.
+pinned at tests/output-text.test.ts:320.
 
 What the one line still has to carry: which gates ran, which were deferred
 to a later stage, which had nothing to check, which the command line left
 out, which could not have blocked because they are unenforced, a count of
 non-blocking findings, a count of the gates' own notes, and how to see the
-rest. Pinned by tests/output-text.test.ts:257, 280, 295, 327, 347 and 747.
+rest. Pinned by tests/output-text.test.ts:282, 305, 320, 352, 372 and 772.
 
 Three of those are suppression, and print as a count EVEN AT ZERO
-(src/output-text.ts:644-649 for gates the command line left out, 664-672
-for gates that are not enforced, 699-708 for the suppressed and ignored
+(src/output-text.ts:674-679 for gates the command line left out, 694-702
+for gates that are not enforced, 729-738 for the suppressed and ignored
 totals summed across gates). This is the family rule dep-guard's stability
 policy states: a gate that can be turned off, dropped by `--gate`, or a
 finding count baselined away is the user's decision, and a clean line that
@@ -2510,14 +2510,14 @@ that ran reported one, because a gate that drops ignored files before its
 own output has no count, and "0 ignored" there would state a fact no gate
 stated. SARIF is unchanged: these stay coverage clauses on the text line
 and the notification-versus-result rule below is untouched. Pinned by
-tests/output-text.test.ts:814 and 827 (the not-enforced and excluded
-counts print at zero), 818 and 831 (they count and name when there is
-something to name), 837 and 841 (the suppressed and ignored totals, at zero
-and summed), and 854 (the ignored total is dropped when a gate did not
+tests/output-text.test.ts:839 and 852 (the not-enforced and excluded
+counts print at zero), 843 and 856 (they count and name when there is
+something to name), 862 and 866 (the suppressed and ignored totals, at zero
+and summed), and 879 (the ignored total is dropped when a gate did not
 report one). Zeroing any of the three counts turns its tests red.
 
 `--verbose` is a command-line flag rather than a policy key
-(`TextOptions`, src/output-text.ts:530-539), because the schema describes
+(`TextOptions`, src/output-text.ts:530-569), because the schema describes
 what a repository gates on and how loud one developer's terminal is is
 not that.
 
@@ -2772,12 +2772,12 @@ when they read nothing else. That branch instead names the enforced gates
 that exited non-zero and says the umbrella could not reconcile a blocking
 count with what they reported (src/output-text.ts:494-513).
 
-Pinned by tests/output-text.test.ts:641 and 653, one for each branch of
+Pinned by tests/output-text.test.ts:666 and 678, one for each branch of
 `reconcileBlocking`, both of which assert the precondition first (the
 normalizer marked nothing blocking and raised exactly one diagnostic) and
 then that the verdict carries no "0 blocking finding(s)" and does say
 which gate exited non-zero. The unenforced aside survives on that verdict
-too, tests/output-text.test.ts:665.
+too, tests/output-text.test.ts:690.
 
 Pinned by tests/normalize.test.ts:44 (the reconstructed flags agree with
 the count and no diagnostic is raised), 49 (a tampered count makes every
@@ -2801,7 +2801,7 @@ from the secret gate lands on `info` and is marked derived, so a
 downstream consumer never sees a level outside the union
 (src/normalize.ts:264-277). The text report marks a derived severity with
 a trailing asterisk and explains the asterisk only when one is on screen
-(src/output-text.ts:49 and 766-768).
+(src/output-text.ts:49 and 819-821).
 
 Fingerprints are carried verbatim and namespaced by product; nothing is
 hashed together with anything else, because a new digest would match no
@@ -2989,3 +2989,31 @@ The `dist/` directory and `schema/` are the published files
 point an editor at it, and because the published contract should be a
 thing on disk that can be diffed between releases; that is a reason, not
 an invariant anything else depends on.
+
+## The compact refusal body can never hide a gate result
+
+`--compact-on-refusal` only takes the short branch in `renderText` when
+`refusalLines(result)` is non-empty (src/output-text.ts:769-781), which is
+exactly when `result.trustBase.refusal` is a non-null string
+(`refusalLines`, src/output-text.ts:412-421, reading
+`result.trustBase?.refusal`). There is exactly ONE place in the codebase
+that ever sets that field to a non-null value: `refusedTrustBase`
+(src/run.ts:306-346, the field itself at line 337). The only other place a
+`RunResult`'s `trustBase` is built, src/cli.ts:225-236, always sets
+`refusal: null`, which is why an ordinary policy run can never take the
+compact branch no matter what `--compact-on-refusal` and `--verbose` say
+together (pinned by the "does nothing to a run that was not refused" case
+in tests/output-text.test.ts's compact-mode describe block).
+
+That single writer is what makes the compact body safe to still call a
+`RunResult` even though it never prints a gate section: every outcome
+`refusedTrustBase` produces is synthesized through `preparationFailed`
+(src/run.ts:313-315) rather than run, so a `RunResult` that reaches the
+compact branch by construction has no gate that actually executed for the
+compact body to be hiding. This is not true by accident of the current two
+call sites; it is true because `refusal` has exactly one writer. A future
+second writer that sets `refusal` on a `RunResult` which also carries real
+gate outcomes would break this invariant silently -- the compact branch
+would start swallowing an actual gate section -- and would need to be
+weighed against this note rather than added without noticing what it
+changes.

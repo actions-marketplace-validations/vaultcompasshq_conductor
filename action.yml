@@ -743,7 +743,12 @@ runs:
           echo "::warning::conductor: could not create a temporary file for the pull request comment step; skipping the pull request comment. The gate's own verdict is unaffected."
           exit 0
         }
-        ARGS=(run --stage "$STAGE" --format text --verbose --output "$REPORT_FILE")
+        # --compact-on-refusal: harmless on every other run, and it is what
+        # keeps an adopter with no policy on the base ref at all from getting
+        # a full sticky comment on every push whose entire content is
+        # "refused, nothing checked". See src/output-text.ts's TextOptions
+        # for the three lines it prints instead.
+        ARGS=(run --stage "$STAGE" --format text --verbose --compact-on-refusal --output "$REPORT_FILE")
         if [ -n "$BASE_REF" ]; then
           ARGS+=(--base "$BASE_REF")
         fi

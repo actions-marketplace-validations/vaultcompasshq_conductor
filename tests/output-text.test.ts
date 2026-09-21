@@ -189,6 +189,31 @@ describe('the combined text report', () => {
   });
 });
 
+describe('the version line in the full report', () => {
+  it('prints "conductor <version>" as the first line when a version is given', () => {
+    const text = renderText(
+      result([outcome({ exitCode: 1, findings: depGuard.findings, run: depGuard.run })], 1),
+      { version: '9.9.9' }
+    );
+    const lines = text.split('\n');
+    expect(lines[0]).toBe('conductor 9.9.9');
+  });
+
+  it('prints no version line at all when none is given', () => {
+    const text = renderText(
+      result([outcome({ exitCode: 1, findings: depGuard.findings, run: depGuard.run })], 1)
+    );
+    expect(text).not.toMatch(/^conductor \d/m);
+  });
+
+  it('does not add a line to the one-line clean summary', () => {
+    // The summary line is kept to exactly one line by design; the version is
+    // not the fact a clean run needs to lead with, so it stays off this path.
+    const text = renderText(result([outcome({ exitCode: 0 })], 0), { version: '9.9.9' });
+    expect(text.trimEnd().split('\n')).toHaveLength(1);
+  });
+});
+
 describe('a gate that could not run', () => {
   const text = renderText(
     result(
@@ -1084,6 +1109,57 @@ describe('a refused trust base in the text report', () => {
 
     expect(text).not.toMatch(/conductor: clean, nothing blocked/);
     expect(text).toMatch(/refused the trust base/);
+  });
+
+  describe('compact mode', () => {
+    // The pull-request-comment step runs --verbose so a real finding gets the
+    // full report; an adopter with no policy on the base ref at all gets a
+    // full sticky comment every push whose entire content is "refused,
+    // nothing checked". Compact mode is the short form of exactly that case:
+    // the version, the verdict sentence, and every refusal detail line the
+    // full report would have printed for this case (the reason and, when
+    // the base ref carries no policy file at all, the remedy it names).
+    // There is no pointer at a step log: the reason is ON the comment
+    // instead of behind a link to a log a fork's read-only token cannot
+    // even show the commenter.
+    it('prints the version, the verdict, and the full refusal reason', () => {
+      const text = renderText(refused(), { compact: true, version: '9.9.9' });
+      const lines = text.trimEnd().split('\n');
+
+      expect(lines).toEqual([
+        'conductor 9.9.9',
+        'verdict: exit 2, the trust base "origin/main" could not be used, so no gate ran and ' +
+          'nothing here is a result of any kind.',
+        'conductor: refused the trust base "origin/main". Nothing was checked.',
+        `  ${REFUSAL}`,
+      ]);
+      expect(text).not.toMatch(/step log/i);
+    });
+
+    it('omits the version line when none is given, but keeps the verdict and the reason', () => {
+      const text = renderText(refused(), { compact: true });
+      const lines = text.trimEnd().split('\n');
+
+      expect(lines).toHaveLength(3);
+      expect(lines[0]).toMatch(/^verdict: exit 2/);
+      expect(lines[1]).toMatch(/refused the trust base/);
+      expect(lines[2]).toMatch(/does not resolve to a commit/);
+      expect(text).not.toMatch(/step log/i);
+    });
+
+    it('wins over --verbose: a refusal never grows back to the full report under compact', () => {
+      const text = renderText(refused(), { compact: true, verbose: true });
+      expect(text.trimEnd().split('\n')).toHaveLength(3);
+    });
+
+    it('does nothing to a run that was not refused, even when requested', () => {
+      const clean = result([outcome({ exitCode: 0 })], 0);
+      const verboseText = renderText(clean, { compact: true, verbose: true });
+      expect(verboseText).toMatch(/^conductor run: /m);
+
+      const summaryText = renderText(clean, { compact: true });
+      expect(summaryText.trimEnd().split('\n')).toHaveLength(1);
+    });
   });
 });
 
