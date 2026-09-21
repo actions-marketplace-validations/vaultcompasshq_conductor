@@ -1002,6 +1002,8 @@ SARIF result, how the exit code is composed, and the mechanism behind the
 intent gate at a pull request. Several of them were learned from running this
 tool against real repositories rather than reasoned out in advance.
 
+Adopter feedback is a row in [FINDINGS.md](FINDINGS.md). How to change this repository is in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 MIT, [Vault & Compass](https://vaultcompass.io)
