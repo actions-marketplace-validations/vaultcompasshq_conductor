@@ -550,10 +550,14 @@ export interface TextOptions {
   version?: string;
 
   /**
-   * Renders three lines instead of the full report when the trust base was
-   * refused and no gate ran: the version, the could-not-run reason (the
-   * same sentence the verdict already carries), and a pointer at the step
-   * log.
+   * Renders a short body instead of the full report when the trust base was
+   * refused and no gate ran: the version, the verdict sentence, and every
+   * refusal detail line the full report would have printed for this case
+   * (`refusalLines`) -- which is the reason and, when the base ref carries
+   * no policy file at all, the remedy that reason names. There is no
+   * pointer at a step log: a fork's read-only token cannot even show the
+   * commenter that log, so the reason has to be ON the comment rather than
+   * behind a link to one.
    *
    * Built for the pull-request-comment step. Its whole point is otherwise a
    * full sticky comment whose only content is "the trust base was refused,
@@ -751,15 +755,28 @@ function summaryLine(result: RunResult): string {
   return parts.join(' ');
 }
 
+/**
+ * The version line, as the first line of every report that carries one.
+ *
+ * One function rather than one literal at each of the two call sites below:
+ * the compact body and the full report both lead with it, and a change to
+ * the line's wording only needs one edit to stay in sync between them.
+ */
+function versionLine(version: string | undefined): string[] {
+  return version === undefined ? [] : [`conductor ${version}`];
+}
+
 export function renderText(result: RunResult, options: TextOptions = {}): string {
   const refusal = refusalLines(result);
 
   if (options.compact === true && refusal.length > 0) {
-    const lines: string[] = [
-      ...(options.version === undefined ? [] : [`conductor ${options.version}`]),
-      verdict(result),
-      'See the "Run the gates" step log for the full report.',
-    ];
+    // The version, then the verdict sentence, then EVERY refusal detail
+    // line the full report would have printed for this case -- refusalLines
+    // itself, which already carries the base-ref-specific remedy (running
+    // "conductor init", or reading the pull request's own file as a
+    // proposal) as part of the same sentence. Nothing here points at a step
+    // log: the reason has to be readable on the comment itself.
+    const lines: string[] = [...versionLine(options.version), verdict(result), ...refusal];
     return `${lines.join('\n')}\n`;
   }
 
@@ -776,7 +793,7 @@ export function renderText(result: RunResult, options: TextOptions = {}): string
   // different questions, so two numbers, and the section headers and the
   // "not enforced" lines are what connect them.
   const lines: string[] = [
-    ...(options.version === undefined ? [] : [`conductor ${options.version}`]),
+    ...versionLine(options.version),
     ...refusal,
     ...(refusal.length === 0 ? [] : ['']),
     `conductor run: ${result.gates.length} gate(s), ${result.findings.length} finding(s)`,

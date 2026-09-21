@@ -22,10 +22,13 @@ likely to be a version bump someone forgot to commit than a deliberate one.
   that line stays exactly one line.
 - **The `pr-comment` step's text run now takes `--compact-on-refusal`.**
   When the trust base was refused and no gate ran, the comment shrinks to
-  three lines, the version, the could-not-run reason (the same sentence the
-  verdict already carries), and a pointer at the "Run the gates" step log,
-  instead of the full per-gate report. An adopter with no policy on the
-  base ref yet otherwise got a full sticky comment on every push whose
+  the version, the verdict, and every refusal detail line the full report
+  would have printed for this case (the reason and, when the base ref
+  carries no policy file at all, the remedy that reason names), instead of
+  the full per-gate report. There is no pointer at a step log: a fork's
+  read-only token cannot even show the commenter that log, so the reason
+  has to be readable on the comment itself. An adopter with no policy on
+  the base ref yet otherwise got a full sticky comment on every push whose
   entire content was "refused, nothing checked". The new `--compact-on-refusal`
   CLI flag is a no-op on any run that was not refused; exit codes, verdict
   semantics, and when the comment posts are unchanged.

@@ -206,6 +206,21 @@ describe('action.yml: the pr-comment step', () => {
     expect(prCommentScript).toMatch(/--verbose/);
   });
 
+  it('pins the compact-on-refusal flag to the pr-comment step alone, spelled exactly', () => {
+    // The spelling matters: --compact-on-refresh is not a flag conductor
+    // understands, and a typo here would silently fall through to the full
+    // per-gate report on every refusal instead of erroring loudly.
+    expect(prCommentScript).not.toMatch(/--compact-on-refresh\b/);
+    expect(prCommentScript).toMatch(/--compact-on-refusal\b/);
+
+    // The gates step still gets the FULL report: its own text or SARIF
+    // output is what a developer without pr-comment enabled reads, and
+    // shrinking that would swallow the only report of a refusal some
+    // adopters ever see.
+    const gatesScript = steps.find((step) => step.id === 'gates')?.run ?? '';
+    expect(gatesScript).not.toMatch(/--compact-on-refusal\b/);
+  });
+
   it('never fails the job on a blocking verdict: the gates step alone owns that exit code', () => {
     expect(prCommentScript).toMatch(/conductor "\$\{ARGS\[@\]\}" \|\| true/);
   });

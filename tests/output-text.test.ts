@@ -1116,9 +1116,13 @@ describe('a refused trust base in the text report', () => {
     // full report; an adopter with no policy on the base ref at all gets a
     // full sticky comment every push whose entire content is "refused,
     // nothing checked". Compact mode is the short form of exactly that case:
-    // the version, the same could-not-run sentence the verdict already
-    // carries, and a pointer at the step log that has the rest.
-    it('prints three lines: the version, the could-not-run reason, and the step log pointer', () => {
+    // the version, the verdict sentence, and every refusal detail line the
+    // full report would have printed for this case (the reason and, when
+    // the base ref carries no policy file at all, the remedy it names).
+    // There is no pointer at a step log: the reason is ON the comment
+    // instead of behind a link to a log a fork's read-only token cannot
+    // even show the commenter.
+    it('prints the version, the verdict, and the full refusal reason', () => {
       const text = renderText(refused(), { compact: true, version: '9.9.9' });
       const lines = text.trimEnd().split('\n');
 
@@ -1126,22 +1130,26 @@ describe('a refused trust base in the text report', () => {
         'conductor 9.9.9',
         'verdict: exit 2, the trust base "origin/main" could not be used, so no gate ran and ' +
           'nothing here is a result of any kind.',
-        'See the "Run the gates" step log for the full report.',
+        'conductor: refused the trust base "origin/main". Nothing was checked.',
+        `  ${REFUSAL}`,
       ]);
+      expect(text).not.toMatch(/step log/i);
     });
 
-    it('omits the version line when none is given, but keeps the other two', () => {
+    it('omits the version line when none is given, but keeps the verdict and the reason', () => {
       const text = renderText(refused(), { compact: true });
       const lines = text.trimEnd().split('\n');
 
-      expect(lines).toHaveLength(2);
+      expect(lines).toHaveLength(3);
       expect(lines[0]).toMatch(/^verdict: exit 2/);
-      expect(lines[1]).toMatch(/Run the gates/);
+      expect(lines[1]).toMatch(/refused the trust base/);
+      expect(lines[2]).toMatch(/does not resolve to a commit/);
+      expect(text).not.toMatch(/step log/i);
     });
 
     it('wins over --verbose: a refusal never grows back to the full report under compact', () => {
       const text = renderText(refused(), { compact: true, verbose: true });
-      expect(text.trimEnd().split('\n')).toHaveLength(2);
+      expect(text.trimEnd().split('\n')).toHaveLength(3);
     });
 
     it('does nothing to a run that was not refused, even when requested', () => {

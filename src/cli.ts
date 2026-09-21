@@ -386,7 +386,7 @@ export function buildProgram(): Command {
     )
     .option(
       '--compact-on-refusal',
-      'when the trust base was refused and no gate ran, print three lines instead of the full refusal report: the version, the could-not-run reason, and a pointer at the step log. Built for the pull-request-comment step; every other run is unaffected, whatever --verbose says. Text output only; SARIF is unaffected.'
+      'when the trust base was refused and no gate ran, print a short body instead of the full refusal report: the version, the verdict, and the refusal reason (with its remedy, when one applies), never the full per-gate report. Built for the pull-request-comment step; every other run is unaffected, whatever --verbose says. Text output only; SARIF is unaffected.'
     )
     .option(
       '--gate <role>',
