@@ -39,6 +39,9 @@ describe('action.yml hardening drift check', () => {
 
   it('installs with --ignore-scripts and then audits signatures', () => {
     expect(actionYml).toContain('npm install -g --ignore-scripts');
-    expect(actionYml).toContain('npm audit signatures');
+    // The phrase "npm audit signatures" also appears in comments. The pin is
+    // the invocation inside the cd subshell, so a comment copy cannot keep
+    // this green after the call itself is removed.
+    expect(actionYml).toContain('( cd "$npm_config_prefix/lib" && npm audit signatures )');
   });
 });
