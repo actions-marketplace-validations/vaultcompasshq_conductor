@@ -29,6 +29,12 @@ likely to be a version bump someone forgot to commit than a deliberate one.
   entire content was "refused, nothing checked". The new `--compact-on-refusal`
   CLI flag is a no-op on any run that was not refused; exit codes, verdict
   semantics, and when the comment posts are unchanged.
+- **README: the advisory-check section now includes a complete copy-paste
+  job** (checkout, setup-node, an explicit fetch of the base ref, and the
+  conductor step with `pr-comment: true`), with `continue-on-error: true` on
+  every fallible step so a required job never goes red over a hung or failed
+  advisory step, and a note that 0.4.5 already self-fetches the base so the
+  explicit fetch step is belt and braces rather than a requirement.
 
 ## [0.4.5] - 2026-09-20
 
