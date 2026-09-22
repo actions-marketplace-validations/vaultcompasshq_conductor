@@ -1078,15 +1078,19 @@ export function renderInitHuman(result: InitResult): string {
     const verb = action.kind === 'skip' ? 'skip' : result.dryRun ? 'would write' : 'wrote';
     lines.push(`  ${verb} ${action.path} (${action.detail})`);
   }
-  // The umbrella checks nothing until this policy is on the base branch: a
-  // pull request is judged by the base branch's own copy, never by the one
-  // it is proposing, so the first pull request after adoption is inert and
-  // reports could-not-run. Said once, here, at the point of use, rather than
-  // left for somebody to discover from a could-not-run comment on their
-  // first pull request.
+  // Two different answers, and saying only the second one is wrong about the
+  // hook this command just wrote. The pre-commit hook runs `conductor run
+  // --staged --stage commit` with no --trust-base, and policyForRun reads the
+  // working tree when trustBase is undefined, so the hook honours this file on
+  // the very next commit. A pull request is the opposite: it is judged by the
+  // base branch's own copy, never by the one it is proposing, so the first
+  // pull request after adoption is inert and reports could-not-run. Said once,
+  // here, at the point of use, rather than left for somebody to discover from
+  // a could-not-run comment on their first pull request.
   lines.push(
-    `Note: ${POLICY_FILE_NAME} takes effect once it is on this repository's base branch; ` +
-      'until then, pull requests report it as could-not-run.'
+    `Note: the pre-commit hook uses ${POLICY_FILE_NAME} from your working tree right away. ` +
+      'On a pull request conductor reads it from the base branch instead, so pull requests ' +
+      'report could-not-run until this file is merged there.'
   );
   return lines.join('\n');
 }
