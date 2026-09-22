@@ -14,6 +14,35 @@ likely to be a version bump someone forgot to commit than a deliberate one.
 
 ## [Unreleased]
 
+- **A gate that could not run now says so, instead of looking like a missing
+  tool.** Reported by an adopter whose check went red for two days while
+  scanning nothing, with `conductor: command not found` as the only symptom.
+  `npm audit signatures` had failed transiently, the step died under `set -eu`
+  before the line that puts the install on `PATH`, and the pull-request comment
+  step (which runs on failed runs by design) reached for a binary it could not
+  resolve, swallowed that, and posted a comment built from an empty file.
+
+  Fail-closed is unchanged: an unverified install still exits non-zero and no
+  gate runs. What changed is everything around it. The `PATH` write now
+  precedes the audit, so no fail-closed check can disguise itself as a missing
+  tool. The audit's failure carries its reason into the step outputs and a
+  workflow error. The comment step posts a compact could-not-run note naming
+  the reason, and says plainly that a registry or sigstore outage produces this
+  too, because the alternative is an adopter reading "signature verification
+  failed" on their own pull request and fearing the worst. `pr-comment.mjs`
+  never posts an empty report as if it were a result.
+
+  The comment step runs the umbrella only when the install step positively
+  recorded that verification passed, rather than when no failure was flagged.
+  The packages are on disk well before the audit, so a failure anywhere earlier
+  would otherwise leave nothing verified and no flag set.
+
+- Conductor invokes **itself** by absolute path, matching dep-guard,
+  vault-guard and intent-guard, which all document this as resistance to a
+  workflow that prepends its own `node_modules/.bin`. `PATH` still carries the
+  install prefix, because the umbrella resolves each *gate* by name and that is
+  the only thing that needs it.
+
 - Documented why the first pull request that adds `.guardrails.yaml` is inert, and that the preview of an unmerged policy is `conductor run --verbose` on your own checkout.
 
 - Pinned the Action's npm floor (10.5.2), version-shape regex, `--ignore-scripts` install, and `npm audit signatures` step in a drift check, so a quieter edit of those lines goes red here. The hygiene blocklist comment now names all four family repositories. Adopter feedback is linked from the README, and the invariant citation for the umbrella's own finding ids now points at README.md:980-984.
