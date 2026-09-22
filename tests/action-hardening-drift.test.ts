@@ -37,6 +37,33 @@ describe('action.yml hardening drift check', () => {
     expect(actionYml).toContain(`SEMVER='${VERSION_SHAPE}'`);
   });
 
+  it('puts the install on PATH before the signature audit, not after', () => {
+    // Ordered the other way, a failing audit leaves the install unreachable
+    // and the next step reports a missing binary rather than a refusal. That
+    // is what the 2026-09-22 incident looked like from the outside. The PATH
+    // write grants nothing on its own: the gates step does not run when the
+    // install step fails.
+    // Scoped to the install step's own script, and trailing comments are
+    // stripped as well as whole-line ones. Both matter: searching the whole
+    // file means any later line mentioning GITHUB_PATH makes this vacuous,
+    // and a whole-line-only filter is defeated by appending
+    // `# ... >> "$GITHUB_PATH" ...` to some other line.
+    const stepStart = actionYml.indexOf('- name: Install the gates outside the workspace');
+    const stepEnd = actionYml.indexOf('- name: Run the gates');
+    expect(stepStart).toBeGreaterThan(-1);
+    expect(stepEnd).toBeGreaterThan(stepStart);
+    const executable = actionYml
+      .slice(stepStart, stepEnd)
+      .split('\n')
+      .map((line) => line.split('#')[0].trim())
+      .filter((line) => line.length > 0);
+    const pathIndex = executable.findIndex((line) => line.includes('>> "$GITHUB_PATH"'));
+    const auditIndex = executable.findIndex((line) => line.includes('npm audit signatures'));
+    expect(pathIndex).toBeGreaterThan(-1);
+    expect(auditIndex).toBeGreaterThan(-1);
+    expect(pathIndex).toBeLessThan(auditIndex);
+  });
+
   it('installs with --ignore-scripts and then audits signatures', () => {
     expect(actionYml).toContain('npm install -g --ignore-scripts');
     // The phrase "npm audit signatures" also appears in comments. The pin is

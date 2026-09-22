@@ -519,25 +519,86 @@ runs:
         # EMISSINGSIGNATUREKEY, and a sigstore or TUF outage does the same to
         # everyone at once. Documented in the README rather than left to be
         # discovered from a red required check.
-        # In a subshell, because a line follows this one and it must not
-        # inherit the verification directory as its cwd. A failing subshell
-        # still trips `set -e`, so this stays a gate rather than a note.
-        ( cd "$npm_config_prefix/lib" && npm audit signatures )
-        # On PATH for the steps after this one rather than called by an
-        # absolute path. The umbrella resolves each gate by NAME, so the gates
-        # have to be findable the same way the umbrella is.
+        # BEFORE the signature audit, deliberately. This line is bookkeeping,
+        # not a privilege grant: the gates step does not run when this step
+        # fails, so an early PATH entry grants nothing. Ordered AFTER a
+        # fail-closed check instead, the failure mode is a later step
+        # reporting a missing binary, which is what the 2026-09-22 incident
+        # looked like from the outside and is why nobody read it as a refusal
+        # for two days. See docs/design-notes.md, "Why a failed signature
+        # check must say so".
+        #
+        # The umbrella resolves each GATE by NAME, which is the reason the
+        # prefix goes on PATH at all. Conductor itself is invoked by absolute
+        # path, so this line is not what makes the umbrella reachable.
         #
         # THE LAYOUT ASSUMED HERE IS THE LINUX AND MACOS ONE, where a global
         # install puts its shims in <prefix>/bin. On Windows npm puts them in
         # the prefix directory itself, so this line would put an empty
         # directory on PATH and every gate would then be reported missing.
         printf '%s\n' "$npm_config_prefix/bin" >> "$GITHUB_PATH"
+        # CAPTURED rather than left to die bare, and this is the whole of the
+        # change: fail-closed is unchanged. The exit below is still non-zero
+        # and the gates step still does not run. What is different is that the
+        # REASON survives, so the run can say why nothing was checked.
+        #
+        # Left bare under `set -eu`, this line took its reason with it. The
+        # 2026-09-22 incident is what that costs: a sigstore hiccup, which the
+        # comment above already names as a KNOWN CONSEQUENCE, produced a
+        # skipped gates step and a later step reporting a missing binary. The
+        # predicted event arrived and was unrecognisable.
+        #
+        # In a subshell, so the cd cannot leak into anything added after it.
+        # `|| audit_status=$?` is exempt from `set -e`, the same idiom the
+        # pull request comment step already uses to guard its mktemp.
+        audit_status=0
+        audit_out="$( ( cd "$npm_config_prefix/lib" && npm audit signatures ) 2>&1 )" || audit_status=$?
+        printf '%s\n' "$audit_out"
+        if [ "$audit_status" -ne 0 ]; then
+          # Flattened to one line: this is read in a log and copied into a
+          # pull request comment, and npm's output is several lines with the
+          # offending package on its own.
+          # CR and tab as well as newline. A lone CR is a line terminator to
+          # the Actions runner's log reader, so text after one in an
+          # `::error::` argument would be read as a fresh line and honoured as
+          # its own workflow command. Not reachable from a fork today, since
+          # this text is npm's own output over versions a pull request cannot
+          # choose, but the flattening is presented here as the control and
+          # should actually be one.
+          audit_reason="$(printf '%s' "$audit_out" | tr '\n\r\t' '   ' | sed 's/  */ /g')"
+          printf 'verification-failed=true\n' >> "$GITHUB_OUTPUT"
+          printf 'verification-reason=%s\n' "$audit_reason" >> "$GITHUB_OUTPUT"
+          printf '::error::conductor: could not verify the gate packages against the registry, so no gate ran and nothing was checked. %s\n' "$audit_reason"
+          exit "$audit_status"
+        fi
+        # ACCEPT ONLY IF PROVABLY OK, not refuse if bad. The npm floor above
+        # says why, and says it was learned the hard way: a refuse-if-bad
+        # shape turns any unexpected failure into permission to proceed.
+        #
+        # This line is what later steps are allowed to act on. The packages
+        # are on disk from the install onward, so every line between there and
+        # here is a place this step can die with nothing verified: the root
+        # manifest write, the PATH write, and any check a future edit adds.
+        # Keyed on a "did it fail" flag instead, all of those would leave the
+        # comment step running an umbrella that was never verified at all.
+        printf 'verification-ok=true\n' >> "$GITHUB_OUTPUT"
 
     - name: Run the gates
       id: gates
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
+        # The binary the install step wrote, by ABSOLUTE PATH rather than by
+        # name, matching dep-guard, vault-guard and intent-guard. Two reasons,
+        # and the second one is why this changed. A bare name is resolved
+        # against PATH, which a workflow can prepend to. And resolving the
+        # umbrella by name means a PATH write that never ran looks like a
+        # missing tool rather than like the failure that skipped it, which is
+        # exactly how the 2026-09-22 incident presented.
+        #
+        # PATH still carries the prefix: the umbrella resolves each GATE by
+        # name, and that is the one thing that genuinely needs it.
+        CONDUCTOR_BIN: ${{ runner.temp }}/conductor-gates/bin/conductor
         # Read by the intent gate's pull-request flow: the event payload for a
         # Spec: line in the pull request body, the base ref for the change set,
         # and the head ref for the branch slug, since a pull request build is
@@ -671,7 +732,7 @@ runs:
         # node_modules/.bin/conductor: that is the head's own install, chosen
         # by the head's own lockfile, and running it would let a pull request
         # choose the program that judges it.
-        conductor "${ARGS[@]}"
+        "$CONDUCTOR_BIN" "${ARGS[@]}"
 
     # OPT-IN, and OFF by an existing consumer's default. The README's own
     # manual recipe ("The report as a pull request comment") already shows
@@ -696,6 +757,18 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
+        # Set by the install step when it could not verify the packages, so
+        # this step can say that rather than reach for a binary that failed
+        # verification.
+        # VERIFICATION_OK is the one this step BRANCHES on, and it is set only
+        # after the audit has actually passed. REASON is for the message.
+        VERIFICATION_OK: ${{ steps.install.outputs.verification-ok }}
+        VERIFICATION_REASON: ${{ steps.install.outputs.verification-reason }}
+        # The same absolute path the gates step uses, for the same reasons.
+        # This step is where the missing-binary line actually surfaced on
+        # 2026-09-22, because it runs `if: always()` and so ran after the
+        # install step had already failed.
+        CONDUCTOR_BIN: ${{ runner.temp }}/conductor-gates/bin/conductor
         # gh reads its token from GH_TOKEN itself; nothing here puts it on a
         # command line. github.token is read-only on a fork pull_request,
         # which is what makes the posting step below fail there -- see
@@ -760,7 +833,29 @@ runs:
         if [ -n "$SPEC" ]; then
           ARGS+=(--spec "$SPEC")
         fi
-        conductor "${ARGS[@]}" || true
+        # NO RENDER RUN when the install could not be verified. At that point
+        # the umbrella is precisely the thing that failed verification, so
+        # running it to produce a comment would trust what was just refused.
+        #
+        # This step runs `if: always()`, which is right: the report is most
+        # worth having on the run that failed. Before this branch existed it
+        # meant reaching for a binary the failed install had left unusable,
+        # getting nothing, and posting the empty file anyway. That is the
+        # comment an adopter actually received on 2026-09-22.
+        #
+        # The last sentence is not decoration. A reader who sees "signature
+        # verification failed" on their own pull request will reasonably fear
+        # a compromise; the common cause is a transient outage and the comment
+        # has to say so, or it escalates a hiccup into an incident.
+        if [ "${VERIFICATION_OK:-}" = "true" ]; then
+          "$CONDUCTOR_BIN" "${ARGS[@]}" || true
+        else
+          {
+            printf '%s\n\n' 'Conductor could not run. The gate packages were not verified, so no gate ran and nothing was checked on this pull request. This is not a finding about this repository.'
+            printf '%s\n\n' "${VERIFICATION_REASON:-No reason was recorded. The job log has the failing step.}"
+            printf '%s\n' 'Conductor verifies its tools against the registry before running, and refuses to trust one it could not verify. A registry or sigstore outage produces this too.'
+          } > "$REPORT_FILE"
+        fi
 
         # The report reaches the poster BY FILE PATH, never by interpolating
         # its bytes into a command: it is conductor's own output, but it can

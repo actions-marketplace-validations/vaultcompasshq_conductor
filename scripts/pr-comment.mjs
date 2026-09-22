@@ -101,6 +101,22 @@ function main() {
     return;
   }
 
+  // An empty report is never posted as if it were a result. This is how the
+  // 2026-09-22 incident reached the pull request: the step's render run had
+  // failed, nothing was written, and an empty file was posted as though it
+  // were a verdict.
+  //
+  // The action now branches before this point and writes a could-not-run note
+  // itself, so this should be unreachable. Kept anyway, deliberately: that
+  // incident was three individually correct mechanisms composing into
+  // silence, and "unreachable by design" is exactly the kind of claim that
+  // decays without anyone noticing.
+  if (reportText.trim() === '') {
+    reportText =
+      'conductor: the gate could not produce a report for this pull request, so ' +
+      'nothing here is a verdict. The reason is in the job log.';
+  }
+
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'conductor-pr-comment-'));
   const writeBodyFile = (body) => {
     const file = path.join(tmpDir, 'comment-body.md');

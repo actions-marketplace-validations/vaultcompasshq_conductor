@@ -3017,3 +3017,80 @@ gate outcomes would break this invariant silently -- the compact branch
 would start swallowing an actual gate section -- and would need to be
 weighed against this note rather than added without noticing what it
 changes.
+
+## A gate that could not run says so, and is never mistaken for a missing tool
+
+Learned from an incident on 2026-09-22, in which an adopter's gate posted a
+red check having scanned nothing for two days and the only visible symptom
+was `conductor: command not found`. The reasoning is in
+docs/design-notes.md, "Why a failed signature check must say so". Four rules
+hold it shut, and each is pinned.
+
+**The PATH write precedes the signature audit.** action.yml:539 writes the
+install prefix to `GITHUB_PATH`; action.yml:555 is the audit. Ordered the
+other way, a failing audit left the install unreachable and the NEXT step
+reported a missing binary rather than a refusal. The PATH write grants
+nothing on its own, because the gates step does not run when the install
+step fails. Pinned by "puts the install on PATH before the signature audit,
+not after" in tests/action-hardening-drift.test.ts, which compares the two
+positions within the install step's own script and strips trailing comments
+as well as whole-line ones. Both halves were added after a reviewer defeated
+the first version by appending the phrase to an unrelated line as a trailing
+comment.
+
+**The audit's failure carries its reason.** action.yml:554-572 captures the
+audit through a command substitution, writes `verification-failed` and
+`verification-reason` to the step outputs, prints a workflow error naming
+that no gate ran, and then exits non-zero. Fail-closed is unchanged: the
+exit is still non-zero and the gates step still does not run. Pinned by
+"records why signature verification failed and still exits non-zero" in
+tests/action.test.ts, which strips trailing comments as well as whole-line
+ones before matching. Verified by replacing the real `exit` line with a
+no-op and keeping the original after a `#` on the same line: with the
+whole-line-only filter that left the entire suite green, and with the
+current filter it goes red.
+
+**Conductor invokes itself by absolute path.** `CONDUCTOR_BIN` is declared
+in the gates step and in the pull-request comment step, and both invoke
+`"$CONDUCTOR_BIN"` rather than a bare name. PATH still carries the prefix,
+because the umbrella resolves each GATE by name and that is the only thing
+that needs it. This matches dep-guard, vault-guard and intent-guard, which
+all call their own binaries by absolute path and document it as resistance
+to a workflow that prepends its own `node_modules/.bin`. Pinned by "invokes
+conductor by absolute path, never by bare name" in tests/action.test.ts,
+which asserts zero bare invocations and exactly two by `CONDUCTOR_BIN`.
+
+**An unverified umbrella is never executed to render a comment, and the
+guard accepts only if provably ok.** The comment step runs `if: always()`,
+so it reaches this point on a failed install. It branches on
+`verification-ok`, which the install step writes only AFTER the audit has
+passed, and runs the umbrella only when that is positively `true`.
+
+The direction matters and was got wrong first: keyed on a "did it fail"
+flag instead, every install failure OTHER than the audit itself left the
+flag unset and fell through to executing an umbrella nothing had verified.
+The packages are on disk from the install onward, so the root manifest
+write, the PATH write, and any fail-closed check a future edit adds between
+them are all places this step can die with nothing verified. This is the
+same rule the npm floor states a few hundred lines above, for the same
+reason.
+
+Pinned behaviourally by "actually skips the render run when verification
+failed, proven by running it" in tests/action-pr-comment.test.ts: the
+conductor stub leaves a marker, the test runs the step with NO flag set and
+asserts the marker is absent, asserts the note that was actually written
+carries the reason, and a control run with `verification-ok` asserts the
+marker appears.
+
+The redundant backstop is deliberate. scripts/pr-comment.mjs replaces an
+empty or whitespace-only report with a note saying the gate could not
+produce one. The action now branches before that point, so it should be
+unreachable -- and the incident this section exists for was three
+individually correct mechanisms composing into silence, which is why
+"unreachable by design" is not treated as load-bearing here.
+
+Not covered by any of the above, and named so a later reader does not
+mistake it for solved: the run-level conclusion stays green while the
+check-run goes red, so `gh run list` shows an unbroken history across a
+run whose gate did nothing. That is a property of the `continue-on-error`
+in the advisory recipe rather than of this action.

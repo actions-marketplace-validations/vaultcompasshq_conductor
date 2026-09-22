@@ -530,3 +530,78 @@ gates:
     stage: ci
     enforce: false
 ```
+
+### Why a failed signature check must say so
+
+Learned from an incident on 2026-09-22. An adopter's gate posted a red check
+having scanned nothing, for two days, and the only visible symptom was
+`conductor: command not found`.
+
+What happened: `npm audit signatures` failed on one package. The install step
+runs under `set -eu`, so it died there, and the line that puts the install on
+`PATH` came *after* the audit. The gates step was skipped. The comment step
+runs `if: always()`, so it ran anyway, tried a second `conductor` invocation to
+render its text, found no binary, swallowed that with its deliberate
+`|| true`, and posted a comment rendered from an empty file. The job concluded
+success. Only the check-run concluded failure.
+
+Three separately correct mechanisms composed into silence. Failing closed on a
+signature check is right. Running the comment step on a failed run is right.
+Not letting the comment step's render invocation change the verdict is right.
+Together they produced a gate that scanned nothing and said nothing about why.
+
+The package was never at fault. Its artifact was byte-identical to what its
+attestation covered, it was published by CI rather than by hand, and the same
+verification succeeded on a re-run of the identical commit an hour later. The
+trigger was a transient failure in the attestation endpoint, which is the
+consequence the install step's own comment already predicted for a sigstore or
+TUF outage. What had not been considered was what that predicted event would
+*look like* when it arrived.
+
+So the rules this section exists to state:
+
+**A fail-closed check must not sit in front of the line that makes the tool
+reachable.** The `PATH` write is bookkeeping, not a privilege grant: the gates
+step is skipped when install fails regardless. Ordering it first costs nothing
+and means no future fail-closed check added to that step inherits a
+missing-binary disguise.
+
+**A check that can fail must say why.** The audit is captured rather than
+allowed to die bare, and its reason is recorded and reported. Fail-closed is
+unchanged; the exit is still non-zero and the gates still do not run.
+
+**Conductor invokes itself by absolute path.** `PATH` remains only so the
+umbrella can resolve the three *gates* by name, which is the one thing that
+genuinely needs it. dep-guard, vault-guard and intent-guard already call their
+own binaries by absolute path and document it as resistance to a workflow that
+prepends its own `node_modules/.bin`. Conductor resolving *itself* by name was
+an inconsistency with a rationale already written down elsewhere in the family.
+
+**A gate that could not run says so on the pull request.** The comment step
+runs the umbrella only when the install step positively recorded that
+verification passed, because otherwise the tool is precisely the thing that
+could not be verified. It posts a compact could-not-run note carrying the
+reason, and says plainly that a registry or sigstore outage is a common
+cause. Without that sentence a reader sees "signature verification failed" on
+their own pull request and reasonably fears the worst.
+
+The guard accepts only if provably ok, and the first version of this change
+got that backwards. Written as "skip the render when a failure was flagged",
+it covered the audit and nothing else: the packages are on disk well before
+the audit runs, so any earlier death left no flag and fell through to running
+an umbrella nothing had verified. Before this change that was impossible by
+accident, because the umbrella was resolved through PATH and the PATH write
+came after the audit. Reordering the PATH write and invoking by absolute path
+each removed half of that accident, which is how two fixes for a silence bug
+combined into a way to execute an unverified tool.
+
+**An empty report is never posted as if it were a result.** `pr-comment.mjs`
+posts an honest could-not-produce-a-report note instead. This is redundant with
+the step above and kept anyway: the incident was three individually correct
+mechanisms composing badly, and "unreachable by design" is a claim that decays.
+
+Not addressed here, deliberately: the run-level conclusion stays green while
+the check-run goes red, so an adopter watching `gh run list` sees an unbroken
+history. That is a property of the `continue-on-error` in the advisory recipe
+rather than of this action, and changing what the README recommends means
+telling every existing adopter their recipe moved. It needs its own decision.

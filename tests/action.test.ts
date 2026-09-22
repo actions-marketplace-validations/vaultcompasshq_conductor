@@ -80,7 +80,7 @@ describe('action.yml', () => {
     expect(action.outputs?.sarif?.value).toContain('outputs.sarif');
   });
 
-  it('runs the umbrella off PATH and never out of the tree it is judging', () => {
+  it('runs the umbrella from the install prefix and never out of the tree it is judging', () => {
     // node_modules is the head's own install, chosen by the head's own
     // lockfile. Running the umbrella from there hands a pull request the
     // program that judges it, which is the one thing this action must not do.
@@ -95,7 +95,11 @@ describe('action.yml', () => {
       .join('\n');
 
     expect(code).not.toMatch(/node_modules/);
-    expect(gatesScript).toMatch(/^\s*conductor "\$\{ARGS\[@\]\}"/m);
+    // By absolute path into the install prefix, which satisfies this rule
+    // more strongly than a PATH lookup did: PATH is something a workflow can
+    // prepend to, and runner.temp is not the tree being judged.
+    expect(gatesScript).toMatch(/^\s*"\$CONDUCTOR_BIN" "\$\{ARGS\[@\]\}"/m);
+    expect(stepEnv('gates')['CONDUCTOR_BIN']).toMatch(/runner\.temp/);
   });
 
   it('plumbs through the three variables the pull-request flow reads', () => {
@@ -328,6 +332,9 @@ describe('action.yml shallow-fetches the trust base for a pull-request run', () 
       encoding: 'utf8',
       env: {
         PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+        // The step invokes the umbrella by absolute path now, so the stub has
+        // to be reachable that way rather than only through PATH.
+        CONDUCTOR_BIN: conductorShim,
         GITHUB_OUTPUT: githubOutput,
         GITHUB_EVENT_PATH: '',
         GITHUB_BASE_REF: 'main',
@@ -521,6 +528,8 @@ function runInstall(
   const githubPath = path.join(dir, 'github-path.txt');
   writeFileSync(record, '');
   writeFileSync(githubPath, '');
+  const githubOutputFile = path.join(dir, 'github-output.txt');
+  writeFileSync(githubOutputFile, '');
 
   const result = spawnSync('bash', ['-c', installScript], {
     encoding: 'utf8',
@@ -528,6 +537,9 @@ function runInstall(
       PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
       npm_config_prefix: prefix,
       GITHUB_PATH: githubPath,
+      // The step writes verification-ok here once the audit has passed, so a
+      // run without it would die on the last line under set -u.
+      GITHUB_OUTPUT: githubOutputFile,
       ...defaultVersionEnv(overrides),
     },
   });
@@ -755,6 +767,54 @@ describe('action.yml installs the gates outside the tree', () => {
   it('prepends the install bin directory to PATH rather than calling it by path', () => {
     const { githubPath } = runInstall();
     expect(githubPath.trim()).toMatch(/[/\\]bin$/);
+  });
+
+  it('invokes conductor by absolute path, never by bare name', () => {
+    // dep-guard, vault-guard and intent-guard all call their own binary by
+    // absolute path and document it as resistance to a workflow that
+    // prepends its own node_modules/.bin. Conductor resolving ITSELF by name
+    // was the odd one out, and it is also why a skipped PATH write read as a
+    // missing tool rather than as the refusal it was. PATH still carries the
+    // prefix, because the umbrella resolves each GATE by name.
+    const executable = readFileSync(path.join(ROOT, 'action.yml'), 'utf8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => !line.startsWith('#'));
+    expect(executable.filter((line) => line.startsWith('conductor "${ARGS[@]}"'))).toHaveLength(0);
+    expect(
+      executable.filter((line) => line.startsWith('"$CONDUCTOR_BIN" "${ARGS[@]}"'))
+    ).toHaveLength(2);
+  });
+
+  it('records why signature verification failed and still exits non-zero', () => {
+    // Fail-closed is not being relaxed here: the exit is still non-zero and
+    // the gates step still does not run. What is pinned is that the REASON
+    // survives, so a run can say why nothing was checked. Left to die bare
+    // under set -eu, the audit took its reason with it and the next step
+    // reported a missing binary instead.
+    // Executable lines only. The step explains this branch at length, so a
+    // bare substring check would be satisfied by the explanation and would
+    // stay green after the code it describes was deleted. That is the defect
+    // this family keeps finding in its own pins.
+    // Trailing comments are stripped too, not just whole-line ones. A
+    // whole-line-only filter is defeated by replacing the real line and
+    // appending the original after a `#`, which is how a reviewer deleted
+    // fail-closed from this step with the entire suite still green.
+    const executable = installScript
+      .split('\n')
+      .map((line) => line.split('#')[0].trim())
+      .filter((line) => line.length > 0);
+    const has = (needle: string): boolean =>
+      executable.some((line) => line.includes(needle));
+
+    expect(has('verification-failed=true')).toBe(true);
+    expect(has('verification-reason=%s')).toBe(true);
+    expect(has('::error::conductor: could not verify')).toBe(true);
+    expect(has('exit "$audit_status"')).toBe(true);
+    // Accept only if provably ok. Later steps branch on THIS, so it must be
+    // written after the audit has actually passed, never inferred from the
+    // absence of a failure flag.
+    expect(has('verification-ok=true')).toBe(true);
   });
 
   it('installs under the runner temp, never into the workspace', () => {
