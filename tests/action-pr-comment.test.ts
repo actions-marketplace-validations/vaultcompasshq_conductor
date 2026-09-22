@@ -11,7 +11,15 @@
 
 import { describe, expect, it } from '@jest/globals';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,7 +66,13 @@ function stepEnv(id: string): Record<string, string> {
 function runPrCommentScript(
   extraEnv: Record<string, string>,
   { mktempFails = false }: { mktempFails?: boolean } = {},
-): { status: number | null; stdout: string; stderr: string; nodeArgv: string[] } {
+): {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  nodeArgv: string[];
+  conductorRan: boolean;
+} {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'conductor-pr-comment-step-'));
   try {
     const bin = path.join(dir, 'bin');
@@ -85,9 +99,15 @@ function runPrCommentScript(
     chmodSync(nodeShim, 0o755);
 
     // A no-op stand-in for the real conductor CLI, so the second gates run
-    // this step performs succeeds without needing a real scan.
+    // this step performs succeeds without needing a real scan. It leaves a
+    // marker so a test can prove the render run was SKIPPED rather than only
+    // that the script mentions skipping it.
+    const conductorRanMarker = path.join(dir, 'conductor-ran');
     const conductorShim = path.join(bin, 'conductor');
-    writeFileSync(conductorShim, '#!/bin/sh\nexit 0\n');
+    writeFileSync(
+      conductorShim,
+      `#!/bin/sh\nprintf 'ran\\n' >> ${JSON.stringify(conductorRanMarker)}\nexit 0\n`,
+    );
     chmodSync(conductorShim, 0o755);
 
     if (mktempFails) {
@@ -125,6 +145,7 @@ function runPrCommentScript(
       stdout: result.stdout ?? '',
       stderr: result.stderr ?? '',
       nodeArgv,
+      conductorRan: existsSync(conductorRanMarker),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -224,8 +245,42 @@ describe('action.yml: the pr-comment step', () => {
     expect(gatesScript).not.toMatch(/--compact-on-refusal\b/);
   });
 
+  it('posts a could-not-run note instead of rendering with an unverified binary', () => {
+    // When the install step could not verify the packages, the umbrella is
+    // precisely the thing that failed verification, so running it to render a
+    // comment would trust what was just refused. The comment step runs
+    // `if: always()`, so without this branch it reached for a binary the
+    // failed install had left unusable and posted the empty file it got.
+    expect(prCommentScript).toContain('VERIFICATION_FAILED');
+    expect(prCommentScript).toContain('Conductor could not run.');
+    expect(prCommentScript).toContain('nothing was checked');
+    // A reader seeing "signature verification failed" on their own pull
+    // request will fear the worst. The common cause has to be named, or the
+    // comment escalates a transient outage into a suspected compromise.
+    expect(prCommentScript).toMatch(/registry or sigstore outage/i);
+  });
+
+  it('actually skips the render run when verification failed, proven by running it', () => {
+    // The assertions above only prove the script MENTIONS the branch. This
+    // one runs the step and checks the umbrella was never invoked, which is
+    // the property that matters: an unverified binary must not be executed.
+    const failed = runPrCommentScript({
+      VERIFICATION_FAILED: 'true',
+      VERIFICATION_REASON: 'one bad sig',
+    });
+    expect(failed.conductorRan).toBe(false);
+
+    // The control. Without the flag the render run still happens, so the
+    // assertion above is measuring the branch rather than a stub that never
+    // runs in either case.
+    const normal = runPrCommentScript({});
+    expect(normal.conductorRan).toBe(true);
+  });
+
   it('never fails the job on a blocking verdict: the gates step alone owns that exit code', () => {
     // The property is the `|| true`: the render run never owns the verdict.
+    // See also the verification branch above it, which skips this line
+    // entirely when the install could not be verified.
     // The invocation is by absolute path now, for the reasons in the gates
     // step's own CONDUCTOR_BIN comment.
     expect(prCommentScript).toMatch(/"\$CONDUCTOR_BIN" "\$\{ARGS\[@\]\}" \|\| true/);

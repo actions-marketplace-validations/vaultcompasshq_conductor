@@ -739,6 +739,11 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
+        # Set by the install step when it could not verify the packages, so
+        # this step can say that rather than reach for a binary that failed
+        # verification.
+        VERIFICATION_FAILED: ${{ steps.install.outputs.verification-failed }}
+        VERIFICATION_REASON: ${{ steps.install.outputs.verification-reason }}
         # The same absolute path the gates step uses, for the same reasons.
         # This step is where the missing-binary line actually surfaced on
         # 2026-09-22, because it runs `if: always()` and so ran after the
@@ -808,7 +813,29 @@ runs:
         if [ -n "$SPEC" ]; then
           ARGS+=(--spec "$SPEC")
         fi
-        "$CONDUCTOR_BIN" "${ARGS[@]}" || true
+        # NO RENDER RUN when the install could not be verified. At that point
+        # the umbrella is precisely the thing that failed verification, so
+        # running it to produce a comment would trust what was just refused.
+        #
+        # This step runs `if: always()`, which is right: the report is most
+        # worth having on the run that failed. Before this branch existed it
+        # meant reaching for a binary the failed install had left unusable,
+        # getting nothing, and posting the empty file anyway. That is the
+        # comment an adopter actually received on 2026-09-22.
+        #
+        # The last sentence is not decoration. A reader who sees "signature
+        # verification failed" on their own pull request will reasonably fear
+        # a compromise; the common cause is a transient outage and the comment
+        # has to say so, or it escalates a hiccup into an incident.
+        if [ "${VERIFICATION_FAILED:-}" = "true" ]; then
+          {
+            printf '%s\n\n' '**Conductor could not run.** Signature verification failed for the gate packages, so no gate ran and nothing was checked on this pull request. This is not a finding about this repository.'
+            printf '%s\n\n' "${VERIFICATION_REASON:-No reason was recorded.}"
+            printf '%s\n' 'Conductor verifies its tools against the registry before running, and refuses to trust one it could not verify. A registry or sigstore outage produces this too.'
+          } > "$REPORT_FILE"
+        else
+          "$CONDUCTOR_BIN" "${ARGS[@]}" || true
+        fi
 
         # The report reaches the poster BY FILE PATH, never by interpolating
         # its bytes into a command: it is conductor's own output, but it can
