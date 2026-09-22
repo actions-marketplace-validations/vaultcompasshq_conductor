@@ -22,6 +22,7 @@ import {
   POLICY_FILE_NAME,
   applyInit,
   planInit,
+  renderInitHuman,
   revertInit,
 } from '../src/init.js';
 import { parsePolicy } from '../src/policy.js';
@@ -2365,5 +2366,24 @@ describe('a manifest path through a symlink cannot escape the repository', () =>
 
     expect(result.ok).toBe(true);
     expect(existsSync(path.join(repo, POLICY_FILE_NAME))).toBe(false);
+  });
+});
+
+describe('what init prints', () => {
+  it('says the policy has no effect until it is on the base branch', () => {
+    // The umbrella checks nothing until the policy file it just wrote is on
+    // this repository's base branch: a pull request is judged by the base
+    // branch's own copy, never by the one it proposes, so the first pull
+    // request after adoption is inert and reports could-not-run. Init says
+    // that once, here, rather than leaving it for somebody to discover from
+    // a could-not-run comment on their own first pull request.
+    const repo = gitRepo();
+    const result = init(repo);
+
+    const output = renderInitHuman(result);
+
+    expect(output).toContain(
+      `${POLICY_FILE_NAME} takes effect once it is on this repository's base branch`
+    );
   });
 });

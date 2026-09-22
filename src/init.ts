@@ -64,13 +64,11 @@
 //     and lost it at the next install, with the manifest still recording it
 //     as installed. See detectManagedHook and declaredManagedHooks.
 
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
-  existsSync, lstatSync,
+  existsSync,
   mkdirSync,
-  readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -80,389 +78,47 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 
-import { DEFAULT_STAGE_FOR_ROLE, GATE_ROLES, POLICY_FILE_NAME, PRODUCT_FOR_ROLE } from './policy.js';
-import type { GateRole, Product } from './policy.js';
-import { CANDIDATES } from './resolve.js';
+import type { Product } from './policy.js';
 
-export { POLICY_FILE_NAME };
+import {
+  DEP_GUARD_HOOK_MARKER,
+  INTENT_GUARD_HOOK_MARKER,
+  MANAGED_HOOK_MARKER,
+  declaredManagedHooks,
+  detectGateHook,
+  detectGeneratedHook,
+  detectManagedHook,
+  editedManagedGuidance,
+  foreignGuidance,
+  gateHookGuidance,
+  generatedHookGuidance,
+  huskyDirectoryFor,
+  huskyShimPresent,
+  managedHooksGuidance,
+} from './init-hook-detect.js';
+import type { HookManager, ManagedDeclaration, ManagedHookManager } from './init-hook-detect.js';
 
-/** The one string that says "conductor init wrote this". */
-export const MANAGED_HOOK_MARKER = 'guardrails-managed-hook: v1';
+import {
+  MANIFEST_RELATIVE_PATH,
+  manifestPathInsideRepo,
+  readIfExists,
+  readManifest,
+  recordedHookSha,
+  sha256,
+} from './init-manifest.js';
+import type { Manifest, ManifestFile } from './init-manifest.js';
 
-export const MANIFEST_RELATIVE_PATH = '.guardrails/manifest.json';
+import { POLICY_FILE_NAME, detectGates, renderPolicy } from './init-policy.js';
 
-/**
- * Markers each gate's own installer writes, so a collision is recognised
- * rather than clobbered. Two of these are literal marker comments the other
- * tools write on purpose; the third has no marker at all and is matched on
- * the two strings its hook always contains, which is exactly how that
- * tool's own installer recognises its own hook.
- */
-export const DEP_GUARD_HOOK_MARKER = 'dep-guard-managed-hook: v1';
-export const INTENT_GUARD_HOOK_MARKER = 'conductor-managed-pre-commit';
-
-/**
- * Hook managers whose installed pre-commit file is GENERATED rather than
- * written by a human. Every one of these rewrites that file on install, so
- * it is never the file the umbrella may write into.
- *
- * The same four names dep-guard's and vault-guard's inits use, so the
- * family says one thing. The difference is that those take the manager as
- * a flag, and this one detects it: the umbrella's whole job is to be run
- * once in a repository somebody else already wired up.
- */
-export type HookManager =
-  | 'native'
-  | 'husky'
-  | 'lefthook'
-  | 'precommit'
-  | 'simple-git-hooks'
-  | 'yorkie';
-
-/**
- * The two managers whose pre-commit TEXT lives in package.json rather than
- * in a config file of their own or in the hook file.
- *
- * They are kept apart from lefthook and the pre-commit framework because
- * the refusal is different: there is no manager-owned config file to point
- * somebody at, only a key in the file conductor deliberately never writes.
- */
-export type ManagedHookManager = 'simple-git-hooks' | 'yorkie';
-
-/**
- * The standalone config files simple-git-hooks reads, exactly as its own
- * README lists them. yorkie has no equivalent: its config is the
- * `gitHooks` key and nothing else.
- */
-const SIMPLE_GIT_HOOKS_CONFIG_FILES = [
-  '.simple-git-hooks.cjs',
-  '.simple-git-hooks.js',
-  '.simple-git-hooks.mjs',
-  '.simple-git-hooks.json',
-  'simple-git-hooks.cjs',
-  'simple-git-hooks.js',
-  'simple-git-hooks.mjs',
-  'simple-git-hooks.json',
-];
-
-/**
- * The `.husky` directory whose generated subdirectory git has been pointed
- * at, or null when this is not that arrangement.
- *
- * The rule is STRUCTURAL and nothing else: the hooks directory is named
- * `_`, and its parent is named `.husky`. Only husky creates that path, so
- * the shape alone identifies it, and both halves are required.
- *
- * Two things are deliberately NOT part of the rule, each for a reason that
- * cost a bug:
- *
- *  - THE CONTENT of the pre-commit file git executes. The line that sources
- *    husky's shim appears in two completely different places:
- *
- *      husky 9  core.hooksPath = .husky/_   .husky/_/pre-commit sources
- *               _/h and IS a dispatcher; the tracked hook is one up.
- *      husky 8  core.hooksPath = .husky     .husky/pre-commit sources
- *               _/husky.sh as a PREAMBLE and IS the tracked hook already.
- *
- *    Reading content therefore fired against husky 8's tracked hook, and
- *    "one directory up" then pointed at the parent of `.husky`, which is
- *    the repository root. Init wrote a hook there, never read the real one
- *    so never saw the gate hook in it, reported success, and left every
- *    commit ungated. The structural rule excludes husky 8 on its own,
- *    because there the hooks directory is `.husky` and not `_`.
- *
- *  - THE PRESENCE OF THE SHIM (`h`, or husky 8's `husky.sh`). Requiring it
- *    looks like useful confirmation and quietly reintroduces the original
- *    trap. husky gitignores `.husky/_`, so `git clean -xdf` deletes the
- *    whole directory while `core.hooksPath=.husky/_` sits in `.git/config`
- *    and survives. In that state there is no shim, no dispatcher, and
- *    nothing whatever to confirm, so a shim requirement sends init down the
- *    ordinary path to write `.husky/_/pre-commit` -- which is exactly the
- *    file husky's next prepare step wipes. The shim is evidence that husky
- *    ran recently, not evidence about whose directory this is, so it is
- *    reported and never tested against.
- *
- * The tracked target is this `.husky` directory's own hook, never a
- * computed parent of whatever directory git happens to point at.
- */
-function huskyDirectoryFor(hooksDir: string): string | null {
-  if (path.basename(hooksDir) !== '_') {
-    return null;
-  }
-  const huskyDir = path.dirname(hooksDir);
-  if (path.basename(huskyDir) !== '.husky') {
-    return null;
-  }
-  return huskyDir;
-}
-
-/** Whether husky's shim is in place, which is worth SAYING but never testing. */
-function huskyShimPresent(hooksDir: string): boolean {
-  return isFile(path.join(hooksDir, 'h')) || isFile(path.join(hooksDir, 'husky.sh'));
-}
-
-/**
- * What each of these two managers actually writes into the hook it
- * generates, checked against a real install rather than against anybody's
- * memory of one. The captured files are in tests/fixtures/hooks.
- *
- * lefthook is recognised by `call_lefthook`, the shell function its
- * generated hook defines and then calls on the last line. Verified against
- * lefthook 2.1.12 and 1.7.18, which both write it twice.
- *
- * `lefthook_version:` is a second alternative and IS NOT VERIFIED. Neither
- * of those versions writes it, and the string does not appear anywhere in
- * the 2.1.12 binary either, so it recognises nothing lefthook produces
- * today. It stays because a spare alternative in an OR cannot cause a false
- * negative and may still catch a much older install. What could not stay is
- * the comment that used to be here, which called both halves the
- * installer's own mark: a hand-written fixture in the suite carried the
- * invented line, so the fixture and the code agreed with each other and
- * neither had ever been held up against lefthook. Recognising lefthook on
- * that string alone misclassifies both real hooks as native, which is how
- * init ends up writing into a file lefthook regenerates.
- *
- * The pre-commit framework stamps its own URL, and that one is exact:
- * verified against pre-commit 4.6.2, whose marker line is character for
- * character the string below.
- */
-function detectGeneratedHook(
-  content: string
-): Exclude<HookManager, 'native' | 'husky' | ManagedHookManager> | null {
-  if (content.includes('call_lefthook') || content.includes('lefthook_version:')) {
-    return 'lefthook';
-  }
-  if (content.includes('File generated by pre-commit: https://pre-commit.com')) {
-    return 'precommit';
-  }
-  return null;
-}
-
-function generatedHookGuidance(manager: 'lefthook' | 'precommit', relPath: string): string {
-  const owner = manager === 'lefthook' ? 'lefthook' : 'the pre-commit framework';
-  const config = manager === 'lefthook' ? 'lefthook-local.yml' : '.pre-commit-config.yaml';
-  const stanza =
-    manager === 'lefthook'
-      ? 'add "conductor:" under pre-commit.commands with "run: conductor run --staged"'
-      : 'add a local hook entry running "conductor run --staged" to its repos: list';
-  return (
-    `${relPath} is generated by ${owner}, which rewrites it on every install, so anything ` +
-    `written there is lost without a word. Nothing was changed. To run the umbrella under ` +
-    `${owner}, ${stanza} in ${config}. Note that ${owner} owns the commit's exit code, so the ` +
-    "umbrella's 1 (a gate blocked) and 2 (a gate could not run) do not survive it."
-  );
-}
-
-/**
- * The manager that generated this hook, for the two whose hook text comes
- * out of package.json. Checked against real installs, captured in
- * tests/fixtures/hooks.
- *
- * simple-git-hooks is recognised by `SKIP_SIMPLE_GIT_HOOKS`, the opt-out
- * variable its generated hook tests on its first line. Verified against
- * 2.14.0 and 2.11.1.
- *
- * IT IS NOT IN EVERY VERSION, and that is the whole reason the package.json
- * key below exists rather than being belt and braces. simple-git-hooks 2.8.0
- * writes the shebang and the user's own command and nothing else: there is
- * no string in that file belonging to simple-git-hooks, so no content rule
- * can recognise it, at any price. A repository on that version is
- * unrecognisable from its hook alone and would have had the umbrella hook
- * written into a file the next install rewrites.
- *
- * yorkie is recognised by `yorkie/src/runner.js`, the script its generated
- * hook invokes. Verified against 2.0.0, which writes it relative, and 1.0.2,
- * which writes the same suffix under an absolute path, so the suffix is what
- * both have in common. The `#yorkie ` version stamp on the second line is a
- * second alternative and is present in both captures too; it is second
- * because it is a comment, and a comment is the part of a generated file
- * most likely to be reworded.
- */
-function detectManagedHook(content: string): ManagedHookManager | null {
-  if (content.includes('SKIP_SIMPLE_GIT_HOOKS')) {
-    return 'simple-git-hooks';
-  }
-  if (content.includes('yorkie/src/runner.js') || content.includes('#yorkie ')) {
-    return 'yorkie';
-  }
-  return null;
-}
-
-/**
- * The manager this repository's package.json DECLARES, or null.
- *
- * This is the signal that matters, and it is not a corroboration of the
- * content rule above: it is the only one that fires on a fresh clone, where
- * the manager has never run, `.git/hooks/pre-commit` does not exist, and the
- * next `npm install` will create it. That is the state a repository is in
- * when somebody adds the umbrella to it.
- *
- * Presence of the key is the whole test; it is deliberately NOT narrowed to
- * a declared `pre-commit` entry. yorkie's installer writes every hook file
- * whatever the key contains (its generated hook decides at run time whether
- * a script exists), and simple-git-hooks removes hooks it previously managed
- * as well as writing the declared ones. Narrowing would trade a refusal that
- * costs somebody one paragraph of guidance for a hook that is silently
- * deleted, and those are not the same size of mistake.
- *
- * An unreadable or unparseable package.json is the same answer as no
- * package.json: this asks whether something was declared, and "the file
- * cannot be read" is not evidence that it was.
- */
-/**
- * Where a managed-hooks declaration was found.
- *
- * The config file is carried rather than collapsed into a boolean because
- * the guidance has to NAME it: simple-git-hooks reads package.json last, so
- * telling somebody to edit package.json while one of these exists sends them
- * to the file that will be ignored.
- */
-type ManagedDetection =
-  | { kind: 'hook' }
-  | { kind: 'package.json' }
-  | { kind: 'config-file'; file: string };
-
-interface ManagedDeclaration {
-  manager: ManagedHookManager;
-  detectedIn: ManagedDetection;
-}
-
-function declaredManagedHooks(root: string): ManagedDeclaration | null {
-  // A standalone config file counts as a declaration on its own. Taken
-  // verbatim from simple-git-hooks' own README, which says the config may
-  // live in ".simple-git-hooks.cjs, .simple-git-hooks.js,
-  // .simple-git-hooks.mjs, .simple-git-hooks.json, or
-  // simple-git-hooks.{cjs,js,mjs,json}". It is an EXACT list rather than a
-  // prefix or extension test, so a simple-git-hooks.yaml or a
-  // simple-git-hooks.md is what it looks like -- somebody's notes -- and not
-  // a reason to refuse an install.
-  //
-  // This is the third signal and the only one that fires for the repository
-  // that has all the others against it: a standalone config plus an older
-  // simple-git-hooks, whose generated hook carries no marker at all.
-  // Checked BEFORE package.json, and the order is the same one
-  // simple-git-hooks resolves in: it reads package.json last, so whichever
-  // of these exists is the file that actually decides the hook.
-  const configFile = SIMPLE_GIT_HOOKS_CONFIG_FILES.find((file) =>
-    isFile(path.join(root, file))
-  );
-  if (configFile !== undefined) {
-    return { manager: 'simple-git-hooks', detectedIn: { kind: 'config-file', file: configFile } };
-  }
-
-  const raw = readIfExists(path.join(root, 'package.json'));
-  if (raw === undefined) {
-    return null;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== 'object' || parsed === null) {
-    return null;
-  }
-  const manifest = parsed as Record<string, unknown>;
-  if (isPlainObject(manifest['simple-git-hooks'])) {
-    return { manager: 'simple-git-hooks', detectedIn: { kind: 'package.json' } };
-  }
-  if (isPlainObject(manifest.gitHooks)) {
-    return { manager: 'yorkie', detectedIn: { kind: 'package.json' } };
-  }
-  return null;
-}
-
-function isPlainObject(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * What init says when it finds one of those two, and why it says nothing
- * else.
- *
- * The honest answer here is a refusal, not an offer. These managers have no
- * tracked hook file to redirect into and no config file of their own to name:
- * the only place the umbrella's command could go is a key in package.json,
- * and init does not write package.json. That is not squeamishness. Init
- * writes a hook, a policy file and a manifest, and the manifest is what
- * makes --revert honest; an edit merged into somebody's package.json has no
- * revert story that is not a guess about which of their later edits were
- * theirs. So the guidance says exactly what to add and leaves the adding to
- * the person whose file it is.
- *
- * The exit-code sentence differs between the two, and both halves are held
- * against the captured fixtures rather than against anybody's memory:
- * simple-git-hooks runs the entry as the last command of a plain `sh`
- * script, so the umbrella's status is the hook's status, while yorkie wraps
- * its runner in `|| { ...; exit 1; }` and turns every non-zero exit into 1.
- */
-function managedHooksGuidance(
-  manager: ManagedHookManager,
-  relPath: string,
-  detectedIn: ManagedDetection
-): string {
-  // WHERE THE ENTRY GOES IS WHERE THE DECLARATION ALREADY IS.
-  // simple-git-hooks reads package.json LAST, so while a standalone config
-  // file exists an entry added to package.json is precisely the one it
-  // ignores. Naming package.json there would send somebody to edit a file
-  // that will not be read, and leave them with the umbrella uninstalled and
-  // no error to explain it.
-  const home = detectedIn.kind === 'config-file' ? detectedIn.file : 'package.json';
-  const entry =
-    detectedIn.kind === 'config-file'
-      ? `the "pre-commit" entry in ${detectedIn.file}`
-      : manager === 'simple-git-hooks'
-        ? 'the "pre-commit" entry under "simple-git-hooks" in package.json'
-        : 'the "pre-commit" entry under "gitHooks" in package.json';
-  const reinstall =
-    manager === 'simple-git-hooks'
-      ? 're-run "npx simple-git-hooks"'
-      : 're-run the install (yorkie rewrites its hooks on postinstall)';
-  const exitCodes =
-    manager === 'simple-git-hooks'
-      ? `${manager} runs that entry as the last command of the hook it generates, so the ` +
-        "umbrella's exit codes reach git unchanged: 1 means a gate blocked, 2 means a gate " +
-        'could not run.'
-      : `${manager}'s generated hook turns every non-zero exit into 1, so the umbrella's 2 ` +
-        '(a gate could not run, and nothing was checked) reaches git as 1 (a gate blocked). ' +
-        'Both still stop the commit.';
-  const lead =
-    detectedIn.kind === 'hook'
-      ? `${relPath} was generated by ${manager} from its own declaration, and is rewritten on ` +
-        'every install.'
-      : `${home} declares ${manager}, which generates ${relPath} from that declaration and ` +
-        'rewrites it on every install.';
-  return (
-    `${lead} A hook written there is gone after the next install while ` +
-    `${MANIFEST_RELATIVE_PATH} still records it as installed, so the repository would report a ` +
-    'guardrail it no longer has. Nothing was changed, and --force does not override this: that ' +
-    `file was never conductor's to hold. To run the umbrella under ${manager}, set ${entry} ` +
-    'to "conductor run --staged --stage commit" yourself, and ' +
-    `${reinstall}. If something is already in that entry, put the umbrella LAST, as its own ` +
-    'command rather than chained behind && : a chain stops at the first failure, so an ' +
-    "umbrella in front of it hides the other command's verdict and one behind an && never " +
-    `runs at all once anything ahead of it fails. conductor does not edit ${home}, so it ` +
-    'cannot do that for you; a later release may offer to. ' +
-    exitCodes
-  );
-}
-
-function detectGateHook(content: string): Product | null {
-  if (content.includes(DEP_GUARD_HOOK_MARKER)) {
-    return 'dep-guard';
-  }
-  // Deliberately still the pre-rename string: it is state already sitting
-  // in users' repositories, and the tool that writes it did not rename it
-  // either, precisely so an older hook stays recognisable.
-  if (content.includes(INTENT_GUARD_HOOK_MARKER)) {
-    return 'intent-guard';
-  }
-  if (content.includes('vault-guard') && content.includes('scan --staged')) {
-    return 'vault-guard';
-  }
-  return null;
-}
+export {
+  MANAGED_HOOK_MARKER,
+  MANIFEST_RELATIVE_PATH,
+  DEP_GUARD_HOOK_MARKER,
+  INTENT_GUARD_HOOK_MARKER,
+  POLICY_FILE_NAME,
+  renderPolicy,
+};
+export type { HookManager, ManagedHookManager };
 
 const HOOK = `#!/bin/sh
 # Guardrail pre-commit hook. ${MANAGED_HOOK_MARKER}
@@ -640,118 +296,6 @@ export interface InitOptions {
   force?: boolean;
 }
 
-interface ManifestFile {
-  path: string;
-  sha256: string;
-  /**
-   * What this file is to the umbrella. Recorded rather than inferred from
-   * the path, because revert's whole decision turns on whether the HOOK
-   * survived, and sniffing that from a filename is a guess.
-   */
-  kind: 'hook' | 'policy';
-}
-
-interface Manifest {
-  version: 1;
-  files: ManifestFile[];
-  adopted: { path: string; content: string; product: Product } | null;
-}
-
-function sha256(content: string): string {
-  return createHash('sha256').update(content).digest('hex');
-}
-
-/**
- * Whether a path the manifest names is contained to the repository.
- *
- * The manifest is committed input, so a path in it is whatever a commit put
- * there. Revert and apply run this over every path they would write to or
- * delete before touching anything, and refuse the whole operation if any one
- * of them is not contained.
- *
- * Two conditions, because a path can escape two ways. The resolved path,
- * treated as plain strings, must be inside the root: this refuses an absolute
- * path and one that climbs out with ../. And no component of the path may be a
- * SYMLINK. A committed dangling symlink (its target does not exist) is the case
- * that broke an earlier version of this: existsSync FOLLOWS the link, finds the
- * missing target, and reports the link absent, so a walk that resolved only the
- * deepest existing ancestor judged the link a plain not-yet-existing leaf and
- * let writeFileSync and chmodSync, which DO follow the final link, land the
- * write on the outside target. lstatSync does not follow, so it catches a
- * symlink component even when its target is gone. init never writes through a
- * symlink, so a symlink anywhere along the path means this is not a path init
- * wrote, and it is refused whatever it points at.
- *
- * Paths here need not exist yet: an adopted hook is restored to a path revert
- * has just removed, and a recorded file may be legitimately gone. The scan
- * stops at the first component that does not exist, because nothing below a
- * missing component exists either, so there is no symlink left to find. A
- * relative candidate is taken against the repository root, which is how the
- * real attack lands: a person running revert has cd'd into the checkout.
- */
-function manifestPathInsideRepo(repoRoot: string, candidate: string): boolean {
-  try {
-    const root = realpathSync(repoRoot);
-    const abs = path.resolve(root, candidate);
-
-    // Deepest ancestor of abs that exists on disk. realpathSync on the whole
-    // path throws when the leaf is not there, so resolve the part that exists
-    // and keep the rest as a tail. existsSync FOLLOWS symlinks, which is why a
-    // dangling symlink is not trusted here; the tail is scanned with lstatSync
-    // below.
-    let ancestor = abs;
-    while (!existsSync(ancestor)) {
-      const parent = path.dirname(ancestor);
-      if (parent === ancestor) {
-        break;
-      }
-      ancestor = parent;
-    }
-    const realAncestor = realpathSync(ancestor);
-    const tail = path.relative(ancestor, abs);
-
-    // Containment, on resolved paths so a macOS temp dir reached through
-    // /var -> /private/var does not read as an escape, and so an existing
-    // symlink directory that points outside is caught by its resolved target.
-    const resolved = tail === '' ? realAncestor : path.join(realAncestor, tail);
-    const inside = path.relative(root, resolved);
-    if (
-      inside === '' ||
-      inside === '..' ||
-      inside.startsWith(`..${path.sep}`) ||
-      path.isAbsolute(inside)
-    ) {
-      return false;
-    }
-
-    // No component of the tail may be a symlink. lstatSync does not follow, so
-    // a committed DANGLING symlink is caught even though existsSync reported it
-    // absent: existsSync followed the link to its missing target, which let an
-    // earlier version treat the link as a plain not-yet-existing leaf and then
-    // let writeFileSync and chmodSync, which DO follow the final link, land the
-    // write on the outside target. init never writes through a symlink, so any
-    // symlink component means this is not a path init wrote. The scan starts at
-    // the resolved ancestor, whose own components are already real, and walks
-    // to the leaf, stopping at the first component that does not exist.
-    let current = realAncestor;
-    for (const segment of tail === '' ? [] : tail.split(path.sep)) {
-      current = path.join(current, segment);
-      let entry;
-      try {
-        entry = lstatSync(current);
-      } catch {
-        break;
-      }
-      if (entry.isSymbolicLink()) {
-        return false;
-      }
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function gitOutput(cwd: string, args: string[]): string | null {
   try {
     return execFileSync('git', args, {
@@ -836,185 +380,6 @@ function samePath(left: string, right: string): boolean {
     }
   };
   return real(left) === real(right);
-}
-
-function readIfExists(file: string): string | undefined {
-  try {
-    return readFileSync(file, 'utf8');
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * The manifest a previous init left, or null when there is none or it will
- * not parse.
- *
- * An unreadable manifest is deliberately the same answer as a missing one:
- * everything that consults it here is deciding whether a file on disk is
- * one the umbrella wrote, and "the record is unreadable" is not evidence
- * that it was.
- */
-function readManifest(root: string): Manifest | null {
-  const raw = readIfExists(path.join(root, MANIFEST_RELATIVE_PATH));
-  if (raw === undefined) {
-    return null;
-  }
-  try {
-    return JSON.parse(raw) as Manifest;
-  } catch {
-    return null;
-  }
-}
-
-/** The hook digest a previous init recorded, or null when there is none. */
-function recordedHookSha(root: string): string | null {
-  return readManifest(root)?.files.find((file) => file.kind === 'hook')?.sha256 ?? null;
-}
-
-/** Names of the gates whose binary resolves right now. */
-function detectGates(root: string, pathValue: string): Set<GateRole> {
-  const found = new Set<GateRole>();
-  for (const role of GATE_ROLES) {
-    const product = PRODUCT_FOR_ROLE[role];
-    for (const candidate of CANDIDATES[product]) {
-      // Same order as resolve.ts, though only the answer matters here:
-      // detection asks whether a gate is installed at all, not which copy
-      // of it would run.
-      const local = isExecutable(path.join(root, 'node_modules', '.bin', candidate.name));
-      const onPath = pathValue
-        .split(path.delimiter)
-        .filter((dir) => dir.length > 0)
-        .some((dir) => isExecutable(path.join(dir, candidate.name)));
-      if (local || onPath) {
-        found.add(role);
-        break;
-      }
-    }
-  }
-  return found;
-}
-
-function isExecutable(file: string): boolean {
-  try {
-    const stats = statSync(file);
-    return stats.isFile() && (stats.mode & 0o111) !== 0;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Existence as a plain file, with no opinion about the executable bit.
- * husky's shim is copied out of the package with whatever mode the tarball
- * carried, and it is sourced rather than executed, so requiring +x here
- * would make detection depend on something husky does not guarantee.
- */
-function isFile(file: string): boolean {
-  try {
-    return statSync(file).isFile();
-  } catch {
-    return false;
-  }
-}
-
-const ROLE_DESCRIPTION: Record<GateRole, string> = {
-  dependencies: 'what comes in: hallucinated names, typosquats, tampered lockfile entries',
-  secrets: 'what goes out: credentials about to be committed',
-  intent: 'what was approved: drift from a frozen intent contract, and change budgets',
-};
-
-/**
- * The policy file, written by hand rather than serialised, because the
- * comments are half the point: a first-run policy file that explains what
- * each key is for is most of a first-run experience, and a YAML emitter
- * cannot carry them.
- */
-export function renderPolicy(detected: Set<GateRole>): string {
-  const lines: string[] = [
-    '# Guardrail policy. One file for every gate this repository runs.',
-    '#',
-    '# Gates are keyed by the ROLE they fill, and the product filling that role',
-    '# is one line inside it. Swapping or renaming a product is a one-line edit',
-    '# rather than a rename of the key your CI reads.',
-    '#',
-    '# There is deliberately no shared severity threshold. Each gate keeps its',
-    '# own, spelled the way that gate spells it, inside its own options block.',
-    '#',
-    '# stage says when a gate runs: commit, push, or ci. Stages are cumulative,',
-    '# so a gate runs at its own stage and at every later one, and a run at ci',
-    '# runs everything enabled. The values below are the defaults.',
-    '#',
-    '# enforce says whether a gate can change the exit code. A gate with',
-    '# enforce: false runs and reports exactly as an enforced one does and',
-    '# never fails the run, which is how a gate is adopted before anybody is',
-    '# ready to have it refuse a commit. It is written out below for every',
-    '# gate, for the same reason stage is: a default that lives only in the',
-    '# parser is a default nobody can find.',
-    'version: 1',
-    '',
-    'gates:',
-  ];
-
-  for (const role of GATE_ROLES) {
-    const product = PRODUCT_FOR_ROLE[role];
-    const enabled = detected.has(role);
-    lines.push(`  # ${ROLE_DESCRIPTION[role]}`);
-    if (!enabled) {
-      lines.push(
-        `  # not found in node_modules/.bin or on PATH. Install ${product}, then set enabled: true.`
-      );
-    }
-    lines.push(`  ${role}:`);
-    lines.push(`    product: ${product}`);
-    lines.push(`    enabled: ${enabled ? 'true' : 'false'}`);
-    lines.push(`    stage: ${DEFAULT_STAGE_FOR_ROLE[role]}`);
-    // The intent gate is the one with ceremony, and the ramp is what makes
-    // that ceremony adoptable: it reports for a few pull requests before it
-    // is allowed to refuse anybody's merge. Writing that here rather than
-    // describing it in a comment is the difference between a fresh init
-    // producing the ramp and three repositories being hand-edited into it.
-    if (role === 'intent') {
-      lines.push('    # It runs and reports in CI without failing the run. Flip it to');
-      lines.push('    # true once a few pull requests show the signal is worth blocking on.');
-      lines.push('    enforce: false');
-    } else {
-      lines.push('    enforce: true');
-    }
-    lines.push('    # Handed to this gate unchanged. Keys are its own long flags,');
-    lines.push('    # without the leading dashes. Example: fail-on: high');
-    lines.push('    options: {}');
-  }
-
-  lines.push('', 'report:', '  format: text', '');
-  return lines.join('\n');
-}
-
-function foreignGuidance(relPath: string): string {
-  return (
-    `${relPath} already exists and was not written by conductor init. Merge "conductor run --staged" ` +
-    'into it yourself, or move it aside and re-run init. Init never replaces a hook it does not ' +
-    "recognise, because that hook is somebody's working setup."
-  );
-}
-
-function editedManagedGuidance(relPath: string): string {
-  return (
-    `${relPath} carries conductor's own marker but does not match the hook this version writes, ` +
-    'and either does not match the one recorded in the manifest or there is no manifest to ' +
-    'check against. Either way nothing on disk says these are the contents conductor left, so ' +
-    "nothing was changed: an edited hook is somebody's working setup, marker or not. Re-run " +
-    'with --force to replace it anyway, or delete it by hand and re-run.'
-  );
-}
-
-function gateHookGuidance(product: Product, relPath: string): string {
-  return (
-    `${relPath} is ${product}'s own pre-commit hook. Adding the umbrella hook alongside it would ` +
-    `run ${product} twice and report its findings twice. Re-run with --adopt to replace it with ` +
-    'the umbrella hook, which runs every enabled commit-stage gate including that one, or leave ' +
-    'things as they are and do not run init here.'
-  );
 }
 
 export function planInit(options: InitOptions): InitResult {
@@ -1713,6 +1078,16 @@ export function renderInitHuman(result: InitResult): string {
     const verb = action.kind === 'skip' ? 'skip' : result.dryRun ? 'would write' : 'wrote';
     lines.push(`  ${verb} ${action.path} (${action.detail})`);
   }
+  // The umbrella checks nothing until this policy is on the base branch: a
+  // pull request is judged by the base branch's own copy, never by the one
+  // it is proposing, so the first pull request after adoption is inert and
+  // reports could-not-run. Said once, here, at the point of use, rather than
+  // left for somebody to discover from a could-not-run comment on their
+  // first pull request.
+  lines.push(
+    `Note: ${POLICY_FILE_NAME} takes effect once it is on this repository's base branch; ` +
+      'until then, pull requests report it as could-not-run.'
+  );
   return lines.join('\n');
 }
 
