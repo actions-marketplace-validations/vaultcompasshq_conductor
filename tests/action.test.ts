@@ -787,10 +787,21 @@ describe('action.yml installs the gates outside the tree', () => {
     // survives, so a run can say why nothing was checked. Left to die bare
     // under set -eu, the audit took its reason with it and the next step
     // reported a missing binary instead.
-    expect(installScript).toContain('verification-failed=true');
-    expect(installScript).toContain('verification-reason');
-    expect(installScript).toContain('::error::');
-    expect(installScript).toContain('exit "$audit_status"');
+    // Executable lines only. The step explains this branch at length, so a
+    // bare substring check would be satisfied by the explanation and would
+    // stay green after the code it describes was deleted. That is the defect
+    // this family keeps finding in its own pins.
+    const executable = installScript
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => !line.startsWith('#'));
+    const has = (needle: string): boolean =>
+      executable.some((line) => line.includes(needle));
+
+    expect(has('verification-failed=true')).toBe(true);
+    expect(has('verification-reason=%s')).toBe(true);
+    expect(has('::error::conductor: could not verify')).toBe(true);
+    expect(has('exit "$audit_status"')).toBe(true);
   });
 
   it('installs under the runner temp, never into the workspace', () => {

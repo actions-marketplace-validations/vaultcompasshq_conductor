@@ -3017,3 +3017,64 @@ gate outcomes would break this invariant silently -- the compact branch
 would start swallowing an actual gate section -- and would need to be
 weighed against this note rather than added without noticing what it
 changes.
+
+## A gate that could not run says so, and is never mistaken for a missing tool
+
+Learned from an incident on 2026-09-22, in which an adopter's gate posted a
+red check having scanned nothing for two days and the only visible symptom
+was `conductor: command not found`. The reasoning is in
+docs/design-notes.md, "Why a failed signature check must say so". Four rules
+hold it shut, and each is pinned.
+
+**The PATH write precedes the signature audit.** action.yml:539 writes the
+install prefix to `GITHUB_PATH`; action.yml:555 is the audit. Ordered the
+other way, a failing audit left the install unreachable and the NEXT step
+reported a missing binary rather than a refusal. The PATH write grants
+nothing on its own, because the gates step does not run when the install
+step fails. Pinned by "puts the install on PATH before the signature audit,
+not after" in tests/action-hardening-drift.test.ts, which compares the two
+positions across executable lines only, so a comment copy of either cannot
+satisfy it.
+
+**The audit's failure carries its reason.** action.yml:554-565 captures the
+audit through a command substitution, writes `verification-failed` and
+`verification-reason` to the step outputs, prints a workflow error naming
+that no gate ran, and then exits non-zero. Fail-closed is unchanged: the
+exit is still non-zero and the gates step still does not run. Pinned by
+"records why signature verification failed and still exits non-zero" in
+tests/action.test.ts, which filters comment lines before matching, and was
+verified by deleting the real `exit` line while leaving a commented copy in
+place and watching the test go red.
+
+**Conductor invokes itself by absolute path.** `CONDUCTOR_BIN` is declared
+in the gates step and in the pull-request comment step, and both invoke
+`"$CONDUCTOR_BIN"` rather than a bare name. PATH still carries the prefix,
+because the umbrella resolves each GATE by name and that is the only thing
+that needs it. This matches dep-guard, vault-guard and intent-guard, which
+all call their own binaries by absolute path and document it as resistance
+to a workflow that prepends its own `node_modules/.bin`. Pinned by "invokes
+conductor by absolute path, never by bare name" in tests/action.test.ts,
+which asserts zero bare invocations and exactly two by `CONDUCTOR_BIN`.
+
+**An unverified umbrella is never executed to render a comment.** The
+comment step runs `if: always()`, so it reaches this point on a failed
+install. When `VERIFICATION_FAILED` is set it writes a compact
+could-not-run note and does NOT run the render invocation, because at that
+moment the umbrella is precisely the thing that failed verification.
+Pinned behaviourally by "actually skips the render run when verification
+failed, proven by running it" in tests/action-pr-comment.test.ts: the
+conductor stub leaves a marker, the test asserts the marker is absent, and a
+control run asserts it appears when the flag is not set.
+
+The redundant backstop is deliberate. scripts/pr-comment.mjs replaces an
+empty or whitespace-only report with a note saying the gate could not
+produce one. The action now branches before that point, so it should be
+unreachable -- and the incident this section exists for was three
+individually correct mechanisms composing into silence, which is why
+"unreachable by design" is not treated as load-bearing here.
+
+Not covered by any of the above, and named so a later reader does not
+mistake it for solved: the run-level conclusion stays green while the
+check-run goes red, so `gh run list` shows an unbroken history across a
+run whose gate did nothing. That is a property of the `continue-on-error`
+in the advisory recipe rather than of this action.
