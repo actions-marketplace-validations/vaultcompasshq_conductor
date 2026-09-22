@@ -570,6 +570,17 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
+        # The binary the install step wrote, by ABSOLUTE PATH rather than by
+        # name, matching dep-guard, vault-guard and intent-guard. Two reasons,
+        # and the second one is why this changed. A bare name is resolved
+        # against PATH, which a workflow can prepend to. And resolving the
+        # umbrella by name means a PATH write that never ran looks like a
+        # missing tool rather than like the failure that skipped it, which is
+        # exactly how the 2026-09-22 incident presented.
+        #
+        # PATH still carries the prefix: the umbrella resolves each GATE by
+        # name, and that is the one thing that genuinely needs it.
+        CONDUCTOR_BIN: ${{ runner.temp }}/conductor-gates/bin/conductor
         # Read by the intent gate's pull-request flow: the event payload for a
         # Spec: line in the pull request body, the base ref for the change set,
         # and the head ref for the branch slug, since a pull request build is
@@ -703,7 +714,7 @@ runs:
         # node_modules/.bin/conductor: that is the head's own install, chosen
         # by the head's own lockfile, and running it would let a pull request
         # choose the program that judges it.
-        conductor "${ARGS[@]}"
+        "$CONDUCTOR_BIN" "${ARGS[@]}"
 
     # OPT-IN, and OFF by an existing consumer's default. The README's own
     # manual recipe ("The report as a pull request comment") already shows
@@ -728,6 +739,11 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
+        # The same absolute path the gates step uses, for the same reasons.
+        # This step is where the missing-binary line actually surfaced on
+        # 2026-09-22, because it runs `if: always()` and so ran after the
+        # install step had already failed.
+        CONDUCTOR_BIN: ${{ runner.temp }}/conductor-gates/bin/conductor
         # gh reads its token from GH_TOKEN itself; nothing here puts it on a
         # command line. github.token is read-only on a fork pull_request,
         # which is what makes the posting step below fail there -- see
@@ -792,7 +808,7 @@ runs:
         if [ -n "$SPEC" ]; then
           ARGS+=(--spec "$SPEC")
         fi
-        conductor "${ARGS[@]}" || true
+        "$CONDUCTOR_BIN" "${ARGS[@]}" || true
 
         # The report reaches the poster BY FILE PATH, never by interpolating
         # its bytes into a command: it is conductor's own output, but it can

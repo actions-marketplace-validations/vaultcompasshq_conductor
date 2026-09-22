@@ -100,6 +100,9 @@ function runPrCommentScript(
       encoding: 'utf8',
       env: {
         PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+        // The step invokes the umbrella by absolute path now, so the stub has
+        // to be reachable that way rather than only through PATH.
+        CONDUCTOR_BIN: conductorShim,
         STAGE: 'ci',
         BASE_REF: '',
         TRUST_BASE: '',
@@ -222,7 +225,10 @@ describe('action.yml: the pr-comment step', () => {
   });
 
   it('never fails the job on a blocking verdict: the gates step alone owns that exit code', () => {
-    expect(prCommentScript).toMatch(/conductor "\$\{ARGS\[@\]\}" \|\| true/);
+    // The property is the `|| true`: the render run never owns the verdict.
+    // The invocation is by absolute path now, for the reasons in the gates
+    // step's own CONDUCTOR_BIN comment.
+    expect(prCommentScript).toMatch(/"\$CONDUCTOR_BIN" "\$\{ARGS\[@\]\}" \|\| true/);
   });
 
   it('invokes the bundled script by github.action_path, never by a path inside the checkout', () => {
