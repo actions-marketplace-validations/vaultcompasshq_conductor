@@ -757,6 +757,18 @@ describe('action.yml installs the gates outside the tree', () => {
     expect(githubPath.trim()).toMatch(/[/\\]bin$/);
   });
 
+  it('records why signature verification failed and still exits non-zero', () => {
+    // Fail-closed is not being relaxed here: the exit is still non-zero and
+    // the gates step still does not run. What is pinned is that the REASON
+    // survives, so a run can say why nothing was checked. Left to die bare
+    // under set -eu, the audit took its reason with it and the next step
+    // reported a missing binary instead.
+    expect(installScript).toContain('verification-failed=true');
+    expect(installScript).toContain('verification-reason');
+    expect(installScript).toContain('::error::');
+    expect(installScript).toContain('exit "$audit_status"');
+  });
+
   it('installs under the runner temp, never into the workspace', () => {
     // An install into the checkout would put the programs that judge the pull
     // request inside the tree being judged, and leave them there for the

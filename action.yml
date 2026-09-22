@@ -537,10 +537,33 @@ runs:
         # the prefix directory itself, so this line would put an empty
         # directory on PATH and every gate would then be reported missing.
         printf '%s\n' "$npm_config_prefix/bin" >> "$GITHUB_PATH"
+        # CAPTURED rather than left to die bare, and this is the whole of the
+        # change: fail-closed is unchanged. The exit below is still non-zero
+        # and the gates step still does not run. What is different is that the
+        # REASON survives, so the run can say why nothing was checked.
+        #
+        # Left bare under `set -eu`, this line took its reason with it. The
+        # 2026-09-22 incident is what that costs: a sigstore hiccup, which the
+        # comment above already names as a KNOWN CONSEQUENCE, produced a
+        # skipped gates step and a later step reporting a missing binary. The
+        # predicted event arrived and was unrecognisable.
+        #
         # In a subshell, so the cd cannot leak into anything added after it.
-        # A failing subshell still trips `set -e`, so this stays a gate rather
-        # than a note.
-        ( cd "$npm_config_prefix/lib" && npm audit signatures )
+        # `|| audit_status=$?` is exempt from `set -e`, the same idiom the
+        # pull request comment step already uses to guard its mktemp.
+        audit_status=0
+        audit_out="$( ( cd "$npm_config_prefix/lib" && npm audit signatures ) 2>&1 )" || audit_status=$?
+        printf '%s\n' "$audit_out"
+        if [ "$audit_status" -ne 0 ]; then
+          # Flattened to one line: this is read in a log and copied into a
+          # pull request comment, and npm's output is several lines with the
+          # offending package on its own.
+          audit_reason="$(printf '%s' "$audit_out" | tr '\n' ' ' | sed 's/  */ /g')"
+          printf 'verification-failed=true\n' >> "$GITHUB_OUTPUT"
+          printf 'verification-reason=%s\n' "$audit_reason" >> "$GITHUB_OUTPUT"
+          printf '::error::conductor: could not verify the gate packages against the registry, so no gate ran and nothing was checked. %s\n' "$audit_reason"
+          exit "$audit_status"
+        fi
 
     - name: Run the gates
       id: gates
