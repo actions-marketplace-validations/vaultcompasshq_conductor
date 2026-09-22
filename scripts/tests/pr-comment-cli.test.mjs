@@ -140,6 +140,28 @@ describe('the pr-comment CLI', () => {
     expect(body).toContain('conductor: clean, nothing blocked. 2 gate(s) ran.');
   });
 
+  it('posts an honest note rather than an empty comment when the report is blank', () => {
+    // An empty report is how the 2026-09-22 incident reached the pull
+    // request: the step's render run had failed, nothing was written, and
+    // this script posted the empty file as though it were a result. The
+    // action now branches before that point, and this guard is kept anyway,
+    // because that incident was three individually correct mechanisms
+    // composing into silence and "unreachable by design" is not load-bearing.
+    const dir = tempDir();
+    const { bin, record } = ghShim(dir);
+    const reportFile = path.join(dir, 'conductor.txt');
+    writeFileSync(reportFile, '   \n  \n');
+
+    const run = runCli(['--report', reportFile, '--pr', '42', '--repo', 'acme/widgets'], { bin });
+
+    expect(run.status).toBe(0);
+    const argv = readArgv(record);
+    const bodyFile = argv[1][3].slice('body=@'.length);
+    const body = readFileSync(bodyFile, 'utf8');
+    expect(body).toContain('could not produce a report');
+    expect(body).toContain('nothing here is a verdict');
+  });
+
   it('updates the existing marked comment instead of creating a second one', () => {
     const dir = tempDir();
     const { bin, record } = ghShim(dir, {
