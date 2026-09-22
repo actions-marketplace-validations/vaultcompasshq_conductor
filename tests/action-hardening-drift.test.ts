@@ -37,6 +37,23 @@ describe('action.yml hardening drift check', () => {
     expect(actionYml).toContain(`SEMVER='${VERSION_SHAPE}'`);
   });
 
+  it('puts the install on PATH before the signature audit, not after', () => {
+    // Ordered the other way, a failing audit leaves the install unreachable
+    // and the next step reports a missing binary rather than a refusal. That
+    // is what the 2026-09-22 incident looked like from the outside. The PATH
+    // write grants nothing on its own: the gates step does not run when the
+    // install step fails.
+    const executable = actionYml
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => !line.startsWith('#'));
+    const pathIndex = executable.findIndex((line) => line.includes('>> "$GITHUB_PATH"'));
+    const auditIndex = executable.findIndex((line) => line.includes('npm audit signatures'));
+    expect(pathIndex).toBeGreaterThan(-1);
+    expect(auditIndex).toBeGreaterThan(-1);
+    expect(pathIndex).toBeLessThan(auditIndex);
+  });
+
   it('installs with --ignore-scripts and then audits signatures', () => {
     expect(actionYml).toContain('npm install -g --ignore-scripts');
     // The phrase "npm audit signatures" also appears in comments. The pin is

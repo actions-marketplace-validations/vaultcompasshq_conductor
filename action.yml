@@ -519,19 +519,28 @@ runs:
         # EMISSINGSIGNATUREKEY, and a sigstore or TUF outage does the same to
         # everyone at once. Documented in the README rather than left to be
         # discovered from a red required check.
-        # In a subshell, because a line follows this one and it must not
-        # inherit the verification directory as its cwd. A failing subshell
-        # still trips `set -e`, so this stays a gate rather than a note.
-        ( cd "$npm_config_prefix/lib" && npm audit signatures )
-        # On PATH for the steps after this one rather than called by an
-        # absolute path. The umbrella resolves each gate by NAME, so the gates
-        # have to be findable the same way the umbrella is.
+        # BEFORE the signature audit, deliberately. This line is bookkeeping,
+        # not a privilege grant: the gates step does not run when this step
+        # fails, so an early PATH entry grants nothing. Ordered AFTER a
+        # fail-closed check instead, the failure mode is a later step
+        # reporting a missing binary, which is what the 2026-09-22 incident
+        # looked like from the outside and is why nobody read it as a refusal
+        # for two days. See docs/design-notes.md, "Why a failed signature
+        # check must say so".
+        #
+        # The umbrella resolves each GATE by NAME, which is the reason the
+        # prefix goes on PATH at all. Conductor itself is invoked by absolute
+        # path, so this line is not what makes the umbrella reachable.
         #
         # THE LAYOUT ASSUMED HERE IS THE LINUX AND MACOS ONE, where a global
         # install puts its shims in <prefix>/bin. On Windows npm puts them in
         # the prefix directory itself, so this line would put an empty
         # directory on PATH and every gate would then be reported missing.
         printf '%s\n' "$npm_config_prefix/bin" >> "$GITHUB_PATH"
+        # In a subshell, so the cd cannot leak into anything added after it.
+        # A failing subshell still trips `set -e`, so this stays a gate rather
+        # than a note.
+        ( cd "$npm_config_prefix/lib" && npm audit signatures )
 
     - name: Run the gates
       id: gates
