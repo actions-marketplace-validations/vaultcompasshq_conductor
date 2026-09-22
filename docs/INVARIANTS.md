@@ -3033,18 +3033,22 @@ reported a missing binary rather than a refusal. The PATH write grants
 nothing on its own, because the gates step does not run when the install
 step fails. Pinned by "puts the install on PATH before the signature audit,
 not after" in tests/action-hardening-drift.test.ts, which compares the two
-positions across executable lines only, so a comment copy of either cannot
-satisfy it.
+positions within the install step's own script and strips trailing comments
+as well as whole-line ones. Both halves were added after a reviewer defeated
+the first version by appending the phrase to an unrelated line as a trailing
+comment.
 
-**The audit's failure carries its reason.** action.yml:554-565 captures the
+**The audit's failure carries its reason.** action.yml:554-572 captures the
 audit through a command substitution, writes `verification-failed` and
 `verification-reason` to the step outputs, prints a workflow error naming
 that no gate ran, and then exits non-zero. Fail-closed is unchanged: the
 exit is still non-zero and the gates step still does not run. Pinned by
 "records why signature verification failed and still exits non-zero" in
-tests/action.test.ts, which filters comment lines before matching, and was
-verified by deleting the real `exit` line while leaving a commented copy in
-place and watching the test go red.
+tests/action.test.ts, which strips trailing comments as well as whole-line
+ones before matching. Verified by replacing the real `exit` line with a
+no-op and keeping the original after a `#` on the same line: with the
+whole-line-only filter that left the entire suite green, and with the
+current filter it goes red.
 
 **Conductor invokes itself by absolute path.** `CONDUCTOR_BIN` is declared
 in the gates step and in the pull-request comment step, and both invoke
@@ -3056,15 +3060,27 @@ to a workflow that prepends its own `node_modules/.bin`. Pinned by "invokes
 conductor by absolute path, never by bare name" in tests/action.test.ts,
 which asserts zero bare invocations and exactly two by `CONDUCTOR_BIN`.
 
-**An unverified umbrella is never executed to render a comment.** The
-comment step runs `if: always()`, so it reaches this point on a failed
-install. When `VERIFICATION_FAILED` is set it writes a compact
-could-not-run note and does NOT run the render invocation, because at that
-moment the umbrella is precisely the thing that failed verification.
+**An unverified umbrella is never executed to render a comment, and the
+guard accepts only if provably ok.** The comment step runs `if: always()`,
+so it reaches this point on a failed install. It branches on
+`verification-ok`, which the install step writes only AFTER the audit has
+passed, and runs the umbrella only when that is positively `true`.
+
+The direction matters and was got wrong first: keyed on a "did it fail"
+flag instead, every install failure OTHER than the audit itself left the
+flag unset and fell through to executing an umbrella nothing had verified.
+The packages are on disk from the install onward, so the root manifest
+write, the PATH write, and any fail-closed check a future edit adds between
+them are all places this step can die with nothing verified. This is the
+same rule the npm floor states a few hundred lines above, for the same
+reason.
+
 Pinned behaviourally by "actually skips the render run when verification
 failed, proven by running it" in tests/action-pr-comment.test.ts: the
-conductor stub leaves a marker, the test asserts the marker is absent, and a
-control run asserts it appears when the flag is not set.
+conductor stub leaves a marker, the test runs the step with NO flag set and
+asserts the marker is absent, asserts the note that was actually written
+carries the reason, and a control run with `verification-ok` asserts the
+marker appears.
 
 The redundant backstop is deliberate. scripts/pr-comment.mjs replaces an
 empty or whitespace-only report with a note saying the gate could not

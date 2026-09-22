@@ -72,6 +72,7 @@ function runPrCommentScript(
   stderr: string;
   nodeArgv: string[];
   conductorRan: boolean;
+  reportBody: string;
 } {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'conductor-pr-comment-step-'));
   try {
@@ -140,12 +141,21 @@ function runPrCommentScript(
       .split('\n')
       .filter((line) => line.length > 0);
 
+    // What actually landed in the report the poster was handed. Asserting on
+    // the step's text proves only that it MENTIONS writing a note; this is
+    // the note.
+    const reportFlag = nodeArgv.indexOf('--report');
+    const reportPath = reportFlag === -1 ? '' : (nodeArgv[reportFlag + 1] ?? '');
+    const reportBody =
+      reportPath !== '' && existsSync(reportPath) ? readFileSync(reportPath, 'utf8') : '';
+
     return {
       status: result.status,
       stdout: result.stdout ?? '',
       stderr: result.stderr ?? '',
       nodeArgv,
       conductorRan: existsSync(conductorRanMarker),
+      reportBody,
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -251,7 +261,7 @@ describe('action.yml: the pr-comment step', () => {
     // comment would trust what was just refused. The comment step runs
     // `if: always()`, so without this branch it reached for a binary the
     // failed install had left unusable and posted the empty file it got.
-    expect(prCommentScript).toContain('VERIFICATION_FAILED');
+    expect(prCommentScript).toContain('VERIFICATION_OK');
     expect(prCommentScript).toContain('Conductor could not run.');
     expect(prCommentScript).toContain('nothing was checked');
     // A reader seeing "signature verification failed" on their own pull
@@ -264,17 +274,24 @@ describe('action.yml: the pr-comment step', () => {
     // The assertions above only prove the script MENTIONS the branch. This
     // one runs the step and checks the umbrella was never invoked, which is
     // the property that matters: an unverified binary must not be executed.
-    const failed = runPrCommentScript({
-      VERIFICATION_FAILED: 'true',
-      VERIFICATION_REASON: 'one bad sig',
-    });
-    expect(failed.conductorRan).toBe(false);
+    // ACCEPT ONLY IF PROVABLY OK. The branch keys on a positive
+    // verification-ok, so the ABSENT flag is the unsafe-by-default case: an
+    // install step that died before the audit, or after it but before the ok
+    // was written, leaves this empty and must not execute the umbrella.
+    const unverified = runPrCommentScript({ VERIFICATION_REASON: 'one bad sig' });
+    expect(unverified.conductorRan).toBe(false);
+    // And it says so, carrying the reason. Without this the note could be
+    // empty and the whole branch would still look correct.
+    expect(unverified.reportBody).toContain('Conductor could not run.');
+    expect(unverified.reportBody).toContain('nothing was checked');
+    expect(unverified.reportBody).toContain('one bad sig');
+    expect(unverified.reportBody).toMatch(/registry or sigstore outage/i);
 
-    // The control. Without the flag the render run still happens, so the
+    // The control. With the positive flag the render run does happen, so the
     // assertion above is measuring the branch rather than a stub that never
     // runs in either case.
-    const normal = runPrCommentScript({});
-    expect(normal.conductorRan).toBe(true);
+    const verified = runPrCommentScript({ VERIFICATION_OK: 'true' });
+    expect(verified.conductorRan).toBe(true);
   });
 
   it('never fails the job on a blocking verdict: the gates step alone owns that exit code', () => {

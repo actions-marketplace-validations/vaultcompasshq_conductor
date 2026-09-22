@@ -528,6 +528,8 @@ function runInstall(
   const githubPath = path.join(dir, 'github-path.txt');
   writeFileSync(record, '');
   writeFileSync(githubPath, '');
+  const githubOutputFile = path.join(dir, 'github-output.txt');
+  writeFileSync(githubOutputFile, '');
 
   const result = spawnSync('bash', ['-c', installScript], {
     encoding: 'utf8',
@@ -535,6 +537,9 @@ function runInstall(
       PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
       npm_config_prefix: prefix,
       GITHUB_PATH: githubPath,
+      // The step writes verification-ok here once the audit has passed, so a
+      // run without it would die on the last line under set -u.
+      GITHUB_OUTPUT: githubOutputFile,
       ...defaultVersionEnv(overrides),
     },
   });
@@ -791,10 +796,14 @@ describe('action.yml installs the gates outside the tree', () => {
     // bare substring check would be satisfied by the explanation and would
     // stay green after the code it describes was deleted. That is the defect
     // this family keeps finding in its own pins.
+    // Trailing comments are stripped too, not just whole-line ones. A
+    // whole-line-only filter is defeated by replacing the real line and
+    // appending the original after a `#`, which is how a reviewer deleted
+    // fail-closed from this step with the entire suite still green.
     const executable = installScript
       .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => !line.startsWith('#'));
+      .map((line) => line.split('#')[0].trim())
+      .filter((line) => line.length > 0);
     const has = (needle: string): boolean =>
       executable.some((line) => line.includes(needle));
 
@@ -802,6 +811,10 @@ describe('action.yml installs the gates outside the tree', () => {
     expect(has('verification-reason=%s')).toBe(true);
     expect(has('::error::conductor: could not verify')).toBe(true);
     expect(has('exit "$audit_status"')).toBe(true);
+    // Accept only if provably ok. Later steps branch on THIS, so it must be
+    // written after the audit has actually passed, never inferred from the
+    // absence of a failure flag.
+    expect(has('verification-ok=true')).toBe(true);
   });
 
   it('installs under the runner temp, never into the workspace', () => {

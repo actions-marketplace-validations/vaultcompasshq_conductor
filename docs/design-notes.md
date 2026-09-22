@@ -578,12 +578,22 @@ prepends its own `node_modules/.bin`. Conductor resolving *itself* by name was
 an inconsistency with a rationale already written down elsewhere in the family.
 
 **A gate that could not run says so on the pull request.** The comment step
-does not attempt a render invocation when the install failed, because at that
-point the tool is precisely the thing that could not be verified. It posts a
-compact could-not-run note carrying the reason, and says plainly that a
-registry or sigstore outage is a common cause. Without that sentence a reader
-sees "signature verification failed" on their own pull request and reasonably
-fears the worst.
+runs the umbrella only when the install step positively recorded that
+verification passed, because otherwise the tool is precisely the thing that
+could not be verified. It posts a compact could-not-run note carrying the
+reason, and says plainly that a registry or sigstore outage is a common
+cause. Without that sentence a reader sees "signature verification failed" on
+their own pull request and reasonably fears the worst.
+
+The guard accepts only if provably ok, and the first version of this change
+got that backwards. Written as "skip the render when a failure was flagged",
+it covered the audit and nothing else: the packages are on disk well before
+the audit runs, so any earlier death left no flag and fell through to running
+an umbrella nothing had verified. Before this change that was impossible by
+accident, because the umbrella was resolved through PATH and the PATH write
+came after the audit. Reordering the PATH write and invoking by absolute path
+each removed half of that accident, which is how two fixes for a silence bug
+combined into a way to execute an unverified tool.
 
 **An empty report is never posted as if it were a result.** `pr-comment.mjs`
 posts an honest could-not-produce-a-report note instead. This is redundant with

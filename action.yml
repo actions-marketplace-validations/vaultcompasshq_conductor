@@ -558,12 +558,30 @@ runs:
           # Flattened to one line: this is read in a log and copied into a
           # pull request comment, and npm's output is several lines with the
           # offending package on its own.
-          audit_reason="$(printf '%s' "$audit_out" | tr '\n' ' ' | sed 's/  */ /g')"
+          # CR and tab as well as newline. A lone CR is a line terminator to
+          # the Actions runner's log reader, so text after one in an
+          # `::error::` argument would be read as a fresh line and honoured as
+          # its own workflow command. Not reachable from a fork today, since
+          # this text is npm's own output over versions a pull request cannot
+          # choose, but the flattening is presented here as the control and
+          # should actually be one.
+          audit_reason="$(printf '%s' "$audit_out" | tr '\n\r\t' '   ' | sed 's/  */ /g')"
           printf 'verification-failed=true\n' >> "$GITHUB_OUTPUT"
           printf 'verification-reason=%s\n' "$audit_reason" >> "$GITHUB_OUTPUT"
           printf '::error::conductor: could not verify the gate packages against the registry, so no gate ran and nothing was checked. %s\n' "$audit_reason"
           exit "$audit_status"
         fi
+        # ACCEPT ONLY IF PROVABLY OK, not refuse if bad. The npm floor above
+        # says why, and says it was learned the hard way: a refuse-if-bad
+        # shape turns any unexpected failure into permission to proceed.
+        #
+        # This line is what later steps are allowed to act on. The packages
+        # are on disk from the install onward, so every line between there and
+        # here is a place this step can die with nothing verified: the root
+        # manifest write, the PATH write, and any check a future edit adds.
+        # Keyed on a "did it fail" flag instead, all of those would leave the
+        # comment step running an umbrella that was never verified at all.
+        printf 'verification-ok=true\n' >> "$GITHUB_OUTPUT"
 
     - name: Run the gates
       id: gates
@@ -742,7 +760,9 @@ runs:
         # Set by the install step when it could not verify the packages, so
         # this step can say that rather than reach for a binary that failed
         # verification.
-        VERIFICATION_FAILED: ${{ steps.install.outputs.verification-failed }}
+        # VERIFICATION_OK is the one this step BRANCHES on, and it is set only
+        # after the audit has actually passed. REASON is for the message.
+        VERIFICATION_OK: ${{ steps.install.outputs.verification-ok }}
         VERIFICATION_REASON: ${{ steps.install.outputs.verification-reason }}
         # The same absolute path the gates step uses, for the same reasons.
         # This step is where the missing-binary line actually surfaced on
@@ -827,14 +847,14 @@ runs:
         # verification failed" on their own pull request will reasonably fear
         # a compromise; the common cause is a transient outage and the comment
         # has to say so, or it escalates a hiccup into an incident.
-        if [ "${VERIFICATION_FAILED:-}" = "true" ]; then
+        if [ "${VERIFICATION_OK:-}" = "true" ]; then
+          "$CONDUCTOR_BIN" "${ARGS[@]}" || true
+        else
           {
-            printf '%s\n\n' '**Conductor could not run.** Signature verification failed for the gate packages, so no gate ran and nothing was checked on this pull request. This is not a finding about this repository.'
-            printf '%s\n\n' "${VERIFICATION_REASON:-No reason was recorded.}"
+            printf '%s\n\n' 'Conductor could not run. The gate packages were not verified, so no gate ran and nothing was checked on this pull request. This is not a finding about this repository.'
+            printf '%s\n\n' "${VERIFICATION_REASON:-No reason was recorded. The job log has the failing step.}"
             printf '%s\n' 'Conductor verifies its tools against the registry before running, and refuses to trust one it could not verify. A registry or sigstore outage produces this too.'
           } > "$REPORT_FILE"
-        else
-          "$CONDUCTOR_BIN" "${ARGS[@]}" || true
         fi
 
         # The report reaches the poster BY FILE PATH, never by interpolating
