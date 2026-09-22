@@ -431,6 +431,12 @@ judged while still reporting pull-request mode as on. Pass the base
 commit, which is HEAD. If the base branch has no `.guardrails.yaml` at all,
 the run has no rules and exits 2 rather than using the pull request's; the
 file the pull request adds decides what runs once it is on the base branch.
+That is why adopting conductor takes one merge before the gates can judge
+anything, and it is not an oversight: the policy file can name a program to
+run, so a run that read it from the pull request would let the pull request
+choose its own judge on exactly the repositories that have no rules yet. See
+"Adopting conductor" below for the sequence and for how to see what your
+policy will do before you merge it.
 
 **Which gates are covered.** All three: dep-guard from **0.6.0**,
 intent-guard from **1.4.0**, vault-guard from **1.7.0**.
@@ -798,6 +804,31 @@ that is not required posts nothing anywhere else a developer would look, so
 without it the run's only trace is a green-looking step nobody opens. See
 "The report as a pull request comment" below for what that input needs and
 what it does on a fork.
+
+### Adopting conductor
+
+The first pull request cannot be judged by the policy it adds. Plan for two
+steps rather than being surprised by one:
+
+1. On a branch, run `conductor init`, then run `conductor run --verbose` on
+   your own checkout. That is the full report your policy will produce, with
+   no `--trust-base` involved: a direct run on your own checkout is already
+   inside the trust boundary, so it reads the policy you just wrote. This is
+   where you tune thresholds, not on a pull request.
+2. Open the pull request with `.guardrails.yaml` and the workflow together,
+   and set `continue-on-error: true` on the conductor step for it. The step
+   is inert on this pull request: the base branch has no policy yet, so the
+   run has no rules, exits 2, and posts a comment saying so with the remedy
+   on it. That is the honest report of an unfinished adoption, not a broken
+   tool.
+3. Merge. Every pull request after that is judged by the policy on the base
+   branch, and a change to that policy shows up as a proposal line and takes
+   effect after its own merge.
+
+There is deliberately no mode in which the pull request's own policy file
+decides the run, not even as a preview: the preview in step 1 gives you the
+same report without putting a file the pull request controls behind a
+verdict on the pull request page.
 
 ### The report as a pull request comment
 
