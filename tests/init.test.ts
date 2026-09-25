@@ -22,6 +22,7 @@ import {
   POLICY_FILE_NAME,
   applyInit,
   planInit,
+  renderInitHuman,
   revertInit,
 } from '../src/init.js';
 import { parsePolicy } from '../src/policy.js';
@@ -2365,5 +2366,48 @@ describe('a manifest path through a symlink cannot escape the repository', () =>
 
     expect(result.ok).toBe(true);
     expect(existsSync(path.join(repo, POLICY_FILE_NAME))).toBe(false);
+  });
+});
+
+describe('what init prints', () => {
+  it('says the policy has no effect until it is on the base branch', () => {
+    // The umbrella checks nothing until the policy file it just wrote is on
+    // this repository's base branch: a pull request is judged by the base
+    // branch's own copy, never by the one it proposes, so the first pull
+    // request after adoption is inert and reports could-not-run. Init says
+    // that once, here, rather than leaving it for somebody to discover from
+    // a could-not-run comment on their own first pull request.
+    const repo = gitRepo();
+    const result = init(repo);
+
+    const output = renderInitHuman(result);
+
+    expect(output).toContain(
+      `Note: the pre-commit hook uses ${POLICY_FILE_NAME} from your working tree right away. ` +
+        'On a pull request conductor reads it from the base branch instead, so pull requests ' +
+        'report could-not-run until this file is merged there.'
+    );
+  });
+
+  it('repeats the note on a dry run and once init is already installed', () => {
+    // Both are previews of the same adoption, so both need the same warning.
+    const repo = gitRepo();
+
+    expect(renderInitHuman(init(repo, { dryRun: true }))).toContain('could-not-run');
+
+    init(repo);
+    const second = init(repo);
+    expect(second.alreadyInstalled).toBe(true);
+    expect(renderInitHuman(second)).toContain('could-not-run');
+  });
+
+  it('leaves the note off a run that wrote nothing', () => {
+    // On a conflict no policy file exists, so there is nothing to reach a base
+    // branch and the note would be actively wrong.
+    const result = init(tempDir());
+
+    expect(result.ok).toBe(false);
+    expect(renderInitHuman(result)).not.toContain('could-not-run');
+    expect(renderInitHuman(result)).not.toContain('pre-commit hook uses');
   });
 });

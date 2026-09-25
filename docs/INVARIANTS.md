@@ -248,7 +248,7 @@ This was recorded here as a disagreement with the README, which used to
 summarise enforcement as making such a gate "a note rather than exit 2".
 That was true of the exit code and false of the published log. The README
 was the wrong one and now says the same thing this section does
-(README.md:186-192), and the rule is pinned by
+(README.md:187-193), and the rule is pinned by
 tests/output-sarif.test.ts:1027, which renders an unenforced gate that
 could not run and asserts the result's level is `error` and its severity
 `critical`, with the `gate-not-enforced` notification beside it.
@@ -256,17 +256,17 @@ could not run and asserts the result's level is `error` and its severity
 The report header and the verdict deliberately count different things.
 The header counts findings across every gate, because it is an inventory
 of what follows it and a reader counting lines on screen has to arrive at
-that number (src/output-text.ts:735-747). The verdict counts only
+that number (src/output-text.ts:787-800). The verdict counts only
 enforced gates, because it answers what failed the run
 (src/output-text.ts:423-445). Two questions, two numbers.
 
 Pinned by tests/exit-codes.test.ts:52, 58, 66 and 75;
-tests/output-text.test.ts:448, 456, 463 and 468 (an unenforced gate that
+tests/output-text.test.ts:473, 481, 488 and 493 (an unenforced gate that
 blocked: the findings and their BLOCKING marker survive, the header is
-marked, and the verdict does not claim none blocked), 495, 500 and 507
+marked, and the verdict does not claim none blocked), 520, 525 and 532
 (an unenforced gate that could not run is loud, is not exit 2, and is not
-also called a gate that blocked), 538, 551 and 559 (only enforced gates
-are named as the reason and counted), and especially 579 ("lets the
+also called a gate that blocked), 563, 576 and 584 (only enforced gates
+are named as the reason and counted), and especially 604 ("lets the
 header count everything on screen while the verdict counts what failed",
 which asserts the header says 3 findings while the verdict says 2 across
 1 gate); tests/cli.test.ts:482, 498, 528 and 543, end to end through the
@@ -313,7 +313,7 @@ of its own "beyond conductor/gate-missing". That was false and always had
 been: the union at src/normalize.ts:705-708 has three members, and the
 README named `conductor/gate-failed` elsewhere in the same document.
 Three, plus the two normalization diagnostics, is the number, and both
-documents now list all five (AGENTS.md:12-16, README.md:684-688).
+documents now list all five (AGENTS.md:12-16, README.md:980-984).
 
 The README half of that pair was pointing at the wrong place and had been
 since it was written. It named the paragraph about mirroring the Action's
@@ -422,6 +422,204 @@ JSON input` and no indication which file was unreadable or that the fix
 is to repair or delete it by hand. Nothing pinned it, because every test
 that touched the manifest wrote valid JSON back. Now pinned by
 tests/init.test.ts:926.
+
+## The gates are installed without scripts, and verified before they are trusted
+
+The four packages this action installs are CONTROL INPUTS: they decide whether a
+pull request may merge. Two properties follow, and both are properties of the
+install step rather than of any gate.
+
+`--ignore-scripts`, because the step runs on a runner holding the job's token.
+Without it every package in the resolved tree gets arbitrary code execution
+there on every run, which is a strange amount of trust to extend from the tools
+whose job is deciding whether this repository can be trusted. Checked against
+the real registry rather than assumed to carry over from one gate: all four
+install and report their own versions correctly with the flag set.
+
+A ROOT MANIFEST, and it is load-bearing rather than tidiness. `npm audit
+signatures` audits the tree's EDGES OUT, and a global install leaves
+`<prefix>/lib` with a `node_modules` and no manifest, so the root declares
+nothing and the four packages just installed sit on the far end of no edge.
+Without it the audit covers their dependencies and SKIPS ALL FOUR GATES.
+Measured on this exact tree: 32 signatures and 8 attestations without the file,
+36 and 12 with it, and the four missing ones are the gates. The single-package
+version of this step shipped in vault-guard without the manifest and recorded
+the short count as evidence that it worked.
+
+WHAT THE VERIFICATION PROVES, narrowly, because the obvious summary is wrong. It
+asks the registry for each name and version in the tree and checks the signature
+served back. It does NOT read the installed files, so a tampered install is
+invisible to it. It does NOT defeat a compromised registry, which signs what it
+serves. And a MISSING attestation is not a failure, only a missing or invalid
+signature is, so it does not require provenance despite all four packages
+publishing it. What remains is that every name and version in the tree, gates
+included, has to be one npmjs currently serves with a valid signature.
+
+THE CLIENT HAS A FLOOR, AND IT IS npm 10.5.2. `npm audit signatures` is not
+version-stable: below 10.5.2 it fails on a CLEAN install of these very
+packages, because the client's bundled keys and TUF root are stale. On 10.5.0
+it says "Someone might have tampered with these packages", naming ours; on
+10.2.4 it is `EEXPIREDSIGNATUREKEY`. Bisected against a real four-gate install,
+with a cold cache and a fresh home so no newer client could have primed the TUF
+root or the key set: 8.19.4, 9.9.4, 10.2.4, 10.5.0 and 10.5.1 fail; 10.5.2 and
+later pass, and 10.5.2 verifies the same package and attestation counts as
+current npm rather than a reduced set. That band maps to Node 18.19.x and 20.10
+through 20.12. An earlier draft of this paragraph put the floor at 10.6.0, from
+a bisection that tested 10.5.0 and then 10.6.0 and never tested what lay
+between: Node 20.13.0 and 20.13.1 ship npm 10.5.2, so that floor refused
+working clients while telling them they could not verify.
+
+**A BARE MAJOR DOES NOT CLEAR THE FLOOR.** Node 22.0.0 ships npm 10.5.1, inside
+the failing band, and `setup-node` satisfies a major-only spec from the runner's
+tool cache when it can. The sibling actions pin `node-version: '22'` and still
+carry this floor for that reason: an earlier version of that wave left it out on
+the grounds that the pin covered it, and it does not.
+
+The floor extracts the first version-shaped token rather than validating the
+string and then splitting it. A `grep -Eq` shape check matches PER LINE while
+the arithmetic reads the WHOLE string, so a client printing an upgrade notice
+above its version passed the check and then failed the comparison, leaving the
+floor skipped. That shipped twice here. An output with no version in it is
+refused, because a guard that fails open when it cannot see is not a guard.
+
+KNOWN CONSEQUENCE OF FAILING CLOSED: a runner pointed at a mirror or proxy that
+does not serve `/-/npm/v1/keys`, or a sigstore outage, installs fine and then
+fails this step with `EMISSINGSIGNATUREKEY`. Documented in the README rather
+than left to be discovered from a red required check.
+
+**Enforced by:** `tests/action.test.ts`, which runs the real install script
+against a stubbed npm and asserts the full argv in order (so a second npm
+invocation cannot be added or removed unnoticed), that the manifest names all
+four packages, and that a version override reaches the manifest as well as the
+install.
+
+A precision that matters, because the obvious reading is wrong: the audit
+resolves each edge BY NAME and audits the version on disk. A manifest declaring
+a wrong or nonexistent version still audits the installed one and exits 0, and a
+manifest naming a package that is not installed is skipped silently, also
+exiting 0. So the NAMES are what make the check cover the gates; the version
+assertions keep the file from drifting away from the install, and are not
+themselves a security property. The stub is npm, so these prove the action ASKS; the counts
+above are what a real npm does.
+
+## On a pull request, no version input may pin BACKWARD
+
+New in the v0.4.3 action tag. The shape check above asks whether each of the
+four inputs is an exact version. It says nothing about WHICH one, and it is not
+the control for version choice. On a same-repo `pull_request` event GitHub runs
+the workflow file from the HEAD, so all four inputs are written by the pull
+request being judged. Once a gate has two published versions that is a bypass
+with an innocent shape: deleting a control reads as deleting a control, while
+`intent-guard-version: 1.4.0` reads as version management. It is not
+hypothetical here, because this tag ships intent-guard 1.5.2 and 1.4.0 is
+published.
+
+So where `GITHUB_BASE_REF` is non-empty the validate step refuses any of the
+four inputs naming a version BELOW the one this action tag ships, and accepts
+anything at or above it. Pinning FORWARD stays allowed, which is the direction
+the inputs exist for. That rests on an ASSUMPTION the rule does not enforce:
+that a newer gate is at least as strict. Nothing bounds a forward pin, so a
+version ahead of the tag's is accepted whatever its rules turn out to be.
+
+Five properties, each load-bearing:
+
+- `TAG_<GATE>_MAJOR/MINOR/PATCH` in `action.yml` are SEPARATE constants from any
+  flag floor, and must not be merged with one even where they hold the same
+  number. `TRUST_BASE_MIN_VERSION` in `src/gate-runner.ts` is FLAG
+  COMPATIBILITY: the oldest build of each gate that understands `--trust-base`.
+  These are the tested versions this TAG ships. One constant serving both is how
+  raising one silently raises the other. The two already disagree for
+  intent-guard: the floor is 1.4.0 and the tag ships 1.5.2.
+- The comparison is against those hardcoded constants, never against anything
+  derived from an input. An input looks identical whether a consumer pinned the
+  current version or the default supplied it, so the step cannot tell a pin from
+  a default; the constant is the only source of truth. It is trustworthy because
+  `action.yml` comes from the ref the consumer's workflow names, not from the
+  pull request's tree. That holds for `vaultcompasshq/conductor` at a ref and
+  NOT for a local-path reference, which reads `action.yml` out of the pull
+  request's own tree; this repository's own workflows reference it that way.
+- One comparison function, called four times. Four hand-written copies would be
+  four places for one to drift into a weaker shape, on a check where the weaker
+  shape is the failure.
+- The event test is `GITHUB_BASE_REF` being non-empty, the same one the run step
+  uses to decide whether to pass `--trust-base`, rather than a second detector
+  to keep in step. A same-repo pull request's author writes the workflow file, so
+  the obvious bypass is `env: GITHUB_BASE_REF: ""` at job level, and TWO separate
+  things close it. First, the validate step DECLARES
+  `GITHUB_BASE_REF: ${{ github.base_ref }}` in its own `env:` mapping, the same
+  spelling the gates step uses. A step-level entry wins over a job-level one, and
+  `github.base_ref` is read out of the event payload rather than out of anything
+  the workflow author writes, so the value cannot come from the workflow file.
+  Second, as a further line of defence the step does not depend on, GitHub
+  documents that the default `GITHUB_*` and `RUNNER_*` variables cannot be
+  overwritten and that such an assignment is ignored
+  (https://docs.github.com/en/actions/reference/workflows-and-actions/variables).
+  The guarantee is recorded here as a second, separate line of defence, not as
+  the sole control either form is depended on. The declared form is defense in
+  depth and is stronger than a bare read of the runner default, because its
+  value comes from the event payload rather than from anything a workflow
+  author can write, but it is not absolute immunity: a job-level
+  `env: BASH_ENV: <a file>` that runs `unset GITHUB_BASE_REF` would still
+  defeat it, because BASH_ENV is sourced before the step script runs and is
+  not itself one of the GITHUB_*/RUNNER_* variables the no-overwrite guarantee
+  covers.
+- Written accept-only-if, not refuse-if, for the same reason as the npm floor:
+  `[` exits 2 on a malformed or out-of-range comparison and an `if` reads 2 as
+  false, so a refuse-if shape turns an arithmetic error into permission.
+
+**What this does NOT cover, stated because the obvious summary is wider than the
+rule.** It closes pinning backward on a SAME-REPO pull request, and nothing
+else.
+
+- Not forks, and on forks the rule costs something rather than merely doing
+  nothing. A fork's `pull_request` run uses the BASE repository's workflow file,
+  so a fork author never writes the pins that judge them and there is no hole
+  there to close. But `GITHUB_BASE_REF` IS set on a fork pull request, so the
+  check fires anyway and judges the base repository's own trusted workflow file.
+  A maintainer's deliberate backward pin there fails EVERY fork pull-request
+  run: a false refusal, on a pin nobody untrusted wrote. The remedy is the same
+  as for any consumer, which is to remove the input.
+- Not a pull request that deletes the step, moves the `uses:` pin to an older
+  action tag, or edits the job away. Those are workflow-file edits, and the
+  control is branch protection on the base branch with review required for
+  `.github/workflows`. Nothing in `action.yml` can substitute for it, and this
+  entry claims no more than the rest of this file does about that boundary.
+- Not push events. The rule fires exactly where `GITHUB_BASE_REF` is set, which
+  is `pull_request` and `pull_request_target`; push runs are out of scope and
+  the shape check remains their only version gate. Read that as SCOPE, not as
+  safety: a push to an UNPROTECTED branch runs that branch's own workflow file,
+  written by the same author, with `GITHUB_BASE_REF` empty, so it is as
+  author-controlled as a pull request and the rule does not cover it.
+- Not `merge_group` events. `GITHUB_BASE_REF` is set on `pull_request` and
+  `pull_request_target` only, so on a merge-queue run it is empty and the check
+  does not fire, while the merge-queue branch carries the pull request's commits
+  and its workflow file. A consumer whose ONLY required check runs on
+  `merge_group` therefore gets nothing from this rule. Where the `pull_request`
+  run is also required, it still catches the pin before the queue is reached.
+- Not the version the gates are compared against being right. The constants say
+  what this tag ships, not what is good.
+
+**Enforced by:** the `refuses a pull request that pins a gate backward` cases in
+`tests/action.test.ts`. EVERY ONE of the four inputs has real published versions
+below its constant, so the UNMODIFIED step refuses real pins today and the cases
+say so with real numbers: `conductor-version: 0.3.0`, `dep-guard-version: 0.5.0`,
+`vault-guard-version: 1.6.0` and `intent-guard-version: 1.4.0` are each driven
+through the shipped step text and refused on a pull-request run, and accepted
+with `GITHUB_BASE_REF` unset. Counted from the registry on 2026-09-18 there are
+46 such pins: 6 conductor versions below 0.4.0, 8 dep-guard below 0.6.0, 25
+vault-guard below 1.7.0 and 7 intent-guard below 1.5.2.
+
+A second set of cases drives a COPY of the step with one constant advanced a
+minor version, which is the action as it will be the day a newer gate ships.
+That device is there to prove DRIFT-FORWARD behaviour, that the comparison
+follows the constant rather than a number frozen into the test, and not because
+the rule would otherwise be unobservable. Each copy asserts the replacement
+MATCHED, so deleting or renaming a constant turns those red rather than quietly
+re-testing the unmodified step. Plus a drift case tying each constant to its
+input's default, a `1.10.0` case on the accepted side that a lexicographic
+comparison would refuse, a case asserting the step declares
+`GITHUB_BASE_REF: ${{ github.base_ref }}` in its `env:` mapping, and a text case
+pinning the accept-only-if shape and the event gate in order.
 
 ## The pull-request trust boundary: the rules come from the base ref
 
@@ -587,7 +785,7 @@ not make, and on a machine whose working tree sits under a symlinked mount
 the link's own entry was not being vetted at all (see `withResolvedParent`,
 src/trust-base.ts:254-257). The repository root arrives realpath'd and the
 program path did not, so the link's own spelling compared as OUTSIDE the tree
-and was skipped in silence. Pinned now by tests/cli.test.ts:1727 and 1753,
+and was skipped in silence. Pinned now by tests/cli.test.ts:1736 and 1762,
 the second of which is the one that would have caught it: the link's target
 is unchanged between the refs, so vetting only the target accepts the run.
 
@@ -709,7 +907,7 @@ pinned separately at tests/output-sarif.test.ts:1571-1698, and the
 The three additions of the fix round are pinned separately, because each of
 them is a way the mechanism above was true and the REPORT of it was not:
 
-- The refusal as its own outcome: tests/output-text.test.ts:1028-1088 (exit
+- The refusal as its own outcome: tests/output-text.test.ts:1053-1113 (exit
   2 and the reason with no gate in the inventory, the fetch-depth remedy,
   leading with it, still naming the gates there were, and never the clean
   one-line summary) and tests/output-sarif.test.ts:1710-1785 (the run
@@ -717,11 +915,11 @@ them is a way the mechanism above was true and the REPORT of it was not:
   false, the could-not-run results survive, silence when not refused). End
   to end through the CLI on a real repository at tests/cli.test.ts:1049,
   1077 and 1116, the last of which is a head policy that will not parse.
-- The program rule: tests/cli.test.ts:1210-1795, eighteen cases on real
+- The program rule: tests/cli.test.ts:1219-1804, eighteen cases on real
   repositories. All THREE attack shapes are driven BEFORE and after, so each
   refusal is measured against a run where the planted program demonstrably
   did execute rather than against an assumption that it would have. The
-  wrapper shape is at tests/cli.test.ts:1412-1578, with the two directions
+  wrapper shape is at tests/cli.test.ts:1421-1587, with the two directions
   that keep the directory rule usable rather than a ban on vendoring beside
   it: a vendored directory left entirely alone is accepted, and a change
   elsewhere in the repository refuses nothing. The mutation that matters for
@@ -790,10 +988,27 @@ and its validate-step error text say the same thing in the same words, and
 none of them may claim more than this.
 
 EXACT VERSIONS ONLY, refused in a validate step against
-`^[0-9]+\.[0-9]+\.[0-9]+$` before anything is fetched. A range or a
-dist-tag would move the decision out of the workflow file and onto whatever
-the registry served that morning, which is the same defect in a slower form.
+`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$` before anything is
+fetched. That pattern also refuses a leading zero, because npm reads
+`01.2.3` as a dist-tag rather than a version. A range or a dist-tag would
+move the decision out of the workflow file and onto whatever the registry
+served that morning, which is the same defect in a slower form.
 `latest` is the case worth naming because it is the one somebody reaches for.
+
+ANYTHING THAT READS action.yml PARSES IT, AND NEVER MATCHES LINES IN IT.
+`scripts/lib/release-kind.mjs` reads all four `-version` defaults out of this
+file to decide whether a tag is a package release or an action-only one, and a
+hand-written line parser got that wrong twice. Searching for the input's name
+anywhere landed inside a description that mentioned another input and read the
+next input's default. Anchoring to `  <name>:` at the start of a line fixed
+that and left a worse hole: every description here is a `>-` block scalar, so
+a line of PROSE reading `default: 1.7.0` was taken as the key. That one is
+reachable in the ACCEPT direction, which is the direction that cuts a Release
+page for an action whose consumers die at `npm install -g`. The `yaml` package
+is already a dependency and `tests/action.test.ts` already parses this same
+file with it; a parser knows a key from the text of a block scalar, and knows
+that `default: '1.7.0'` is the string `1.7.0`. Quoting a default here is
+therefore safe, and adding a fifth input does not need a parser change.
 
 THE INSTALL IS UNCONDITIONAL, on push and `pull_request` alike. A
 conditional install would mean the action behaves one way on the runs that
@@ -862,9 +1077,9 @@ what a hook executes. The resolution decision:
 tests/resolve.test.ts:244-363. The gate: tests/gate-runner.test.ts:591-702,
 where each case plants a marker binary under `node_modules/.bin` so "the
 other one ran" is a fact about the filesystem rather than about a `source`
-field. The reports: tests/output-text.test.ts:1090-1143 and
+field. The reports: tests/output-text.test.ts:1167-1219 and
 tests/output-sarif.test.ts:1787-1841. Through the CLI on a real repository:
-tests/cli.test.ts:1597-1620, where the same plant that 0.3.0 refused is now
+tests/cli.test.ts:1606-1629, where the same plant that 0.3.0 refused is now
 unreachable AND the real gate on PATH reports the secret it was hiding. End
 to end against the real gates: tests/dogfood.e2e.test.ts:662-776, which
 plants two marker binaries in the dogfood clone's own `node_modules/.bin`,
@@ -1180,13 +1395,13 @@ have blocked, so the two numbers would differ if any of this reached
 
 Both formats say it. One line in the text report
 (src/output-text.ts:284-289), a clause on the one-line summary of a clean
-run (src/output-text.ts:644-649), and a `conductor/gate-excluded`
+run (src/output-text.ts:674-679), and a `conductor/gate-excluded`
 notification in the umbrella's SARIF run
 (src/output-sarif.ts:600-608). A notification rather than a result by the
 discriminator below: nothing went wrong, and how much of the policy a run
 covered is a statement about the run. Pinned by
-tests/output-text.test.ts:734 (the full report names them and says
-`--gate`), 747 (the clean run's single line still names them) and 756
+tests/output-text.test.ts:759 (the full report names them and says
+`--gate`), 772 (the clean run's single line still names them) and 781
 (silence on a run that had no `--gate`, verbose or not); and by
 tests/output-sarif.test.ts:149 (a notification and not a result, at note
 level, naming the role and the flag) and 171.
@@ -2195,7 +2410,7 @@ the umbrella's report and the gate's own verdict is a defect in this run
 rather than a property of anybody's configuration.
 
 The text report answers the same question the same way, and the two must
-keep agreeing. `isFullyClean` (src/output-text.ts:570-581) forces the full
+keep agreeing. `isFullyClean` (src/output-text.ts:600-611) forces the full
 report when the umbrella has a diagnostic and does NOT force it for a
 gate's own note, for exactly this reason: the standing note that pnpm
 lockfiles do not record install-script metadata is a permanent property of
@@ -2225,9 +2440,9 @@ result id, `conductor/gate-output-unparseable`, is pinned end to end by
 tests/cli.test.ts:162, which runs the CLI over a gate whose output has
 drifted and finds that id among the umbrella run's RESULTS.
 
-In the text report, pinned by tests/output-text.test.ts:371 and 379 (an
+In the text report, pinned by tests/output-text.test.ts:396 and 404 (an
 umbrella diagnostic forces the full report and is not counted as a note)
-and 295, which is the other half and was uncited here: two of a gate's
+and 320, which is the other half and was uncited here: two of a gate's
 OWN notes leave the run clean, are counted rather than printed, and do
 not force the full report.
 
@@ -2250,15 +2465,15 @@ left marked blocking.
 ## The clean-run summary line, and what it may not swallow
 
 A fully clean run prints one line rather than a screenful
-(`summaryLine`, src/output-text.ts:604-726, reached at
-src/output-text.ts:731-733, and NOT reached when the trust base was refused,
+(`summaryLine`, src/output-text.ts:634-756, reached at
+src/output-text.ts:783-785, and NOT reached when the trust base was refused,
 which is the one thing that outranks a clean run). Twelve lines of per-gate
 detail on a commit
 that found nothing is a cost paid on every commit, and it is what makes a
 team switch a hook off.
 
 The predicate is not simply the exit code (`isFullyClean`,
-src/output-text.ts:570-581). Three extra conditions, and each one exists
+src/output-text.ts:600-611). Three extra conditions, and each one exists
 because collapsing it would swallow the only report anybody sees. A gate
 with `enforce: false` is left out of the composed code, so a run where
 such a gate blocked or could not run still exits 0. An umbrella
@@ -2268,23 +2483,23 @@ deferred" and "nothing had a contract to check" are three distinct states
 with three distinct verdict sentences, and a summary line naming no gates
 would be the exact confusion this family exists to prevent.
 
-Pinned by tests/output-text.test.ts:252, 263 and 270 (one line, none of
-the per-gate detail, and how to see the rest), 274 (`--verbose` prints
-the full report anyway), 391 (an unenforced gate that blocked forces the
-full report even though the run exits 0), 403 (so does one that could not
-run), 371 (so does an umbrella diagnostic) and 424 (a run where no gate
+Pinned by tests/output-text.test.ts:277, 288 and 295 (one line, none of
+the per-gate detail, and how to see the rest), 299 (`--verbose` prints
+the full report anyway), 416 (an unenforced gate that blocked forces the
+full report even though the run exits 0), 428 (so does one that could not
+run), 396 (so does an umbrella diagnostic) and 449 (a run where no gate
 ran at all). The half that must NOT force it, a gate's own note, is
-pinned at tests/output-text.test.ts:295.
+pinned at tests/output-text.test.ts:320.
 
 What the one line still has to carry: which gates ran, which were deferred
 to a later stage, which had nothing to check, which the command line left
 out, which could not have blocked because they are unenforced, a count of
 non-blocking findings, a count of the gates' own notes, and how to see the
-rest. Pinned by tests/output-text.test.ts:257, 280, 295, 327, 347 and 747.
+rest. Pinned by tests/output-text.test.ts:282, 305, 320, 352, 372 and 772.
 
 Three of those are suppression, and print as a count EVEN AT ZERO
-(src/output-text.ts:644-649 for gates the command line left out, 664-672
-for gates that are not enforced, 699-708 for the suppressed and ignored
+(src/output-text.ts:674-679 for gates the command line left out, 694-702
+for gates that are not enforced, 729-738 for the suppressed and ignored
 totals summed across gates). This is the family rule dep-guard's stability
 policy states: a gate that can be turned off, dropped by `--gate`, or a
 finding count baselined away is the user's decision, and a clean line that
@@ -2295,14 +2510,14 @@ that ran reported one, because a gate that drops ignored files before its
 own output has no count, and "0 ignored" there would state a fact no gate
 stated. SARIF is unchanged: these stay coverage clauses on the text line
 and the notification-versus-result rule below is untouched. Pinned by
-tests/output-text.test.ts:814 and 827 (the not-enforced and excluded
-counts print at zero), 818 and 831 (they count and name when there is
-something to name), 837 and 841 (the suppressed and ignored totals, at zero
-and summed), and 854 (the ignored total is dropped when a gate did not
+tests/output-text.test.ts:839 and 852 (the not-enforced and excluded
+counts print at zero), 843 and 856 (they count and name when there is
+something to name), 862 and 866 (the suppressed and ignored totals, at zero
+and summed), and 879 (the ignored total is dropped when a gate did not
 report one). Zeroing any of the three counts turns its tests red.
 
 `--verbose` is a command-line flag rather than a policy key
-(`TextOptions`, src/output-text.ts:530-539), because the schema describes
+(`TextOptions`, src/output-text.ts:530-569), because the schema describes
 what a repository gates on and how loud one developer's terminal is is
 not that.
 
@@ -2557,12 +2772,12 @@ when they read nothing else. That branch instead names the enforced gates
 that exited non-zero and says the umbrella could not reconcile a blocking
 count with what they reported (src/output-text.ts:494-513).
 
-Pinned by tests/output-text.test.ts:641 and 653, one for each branch of
+Pinned by tests/output-text.test.ts:666 and 678, one for each branch of
 `reconcileBlocking`, both of which assert the precondition first (the
 normalizer marked nothing blocking and raised exactly one diagnostic) and
 then that the verdict carries no "0 blocking finding(s)" and does say
 which gate exited non-zero. The unenforced aside survives on that verdict
-too, tests/output-text.test.ts:665.
+too, tests/output-text.test.ts:690.
 
 Pinned by tests/normalize.test.ts:44 (the reconstructed flags agree with
 the count and no diagnostic is raised), 49 (a tampered count makes every
@@ -2586,7 +2801,7 @@ from the secret gate lands on `info` and is marked derived, so a
 downstream consumer never sees a level outside the union
 (src/normalize.ts:264-277). The text report marks a derived severity with
 a trailing asterisk and explains the asterisk only when one is on screen
-(src/output-text.ts:49 and 766-768).
+(src/output-text.ts:49 and 819-821).
 
 Fingerprints are carried verbatim and namespaced by product; nothing is
 hashed together with anything else, because a new digest would match no
@@ -2774,3 +2989,108 @@ The `dist/` directory and `schema/` are the published files
 point an editor at it, and because the published contract should be a
 thing on disk that can be diffed between releases; that is a reason, not
 an invariant anything else depends on.
+
+## The compact refusal body can never hide a gate result
+
+`--compact-on-refusal` only takes the short branch in `renderText` when
+`refusalLines(result)` is non-empty (src/output-text.ts:769-781), which is
+exactly when `result.trustBase.refusal` is a non-null string
+(`refusalLines`, src/output-text.ts:412-421, reading
+`result.trustBase?.refusal`). There is exactly ONE place in the codebase
+that ever sets that field to a non-null value: `refusedTrustBase`
+(src/run.ts:306-346, the field itself at line 337). The only other place a
+`RunResult`'s `trustBase` is built, src/cli.ts:225-236, always sets
+`refusal: null`, which is why an ordinary policy run can never take the
+compact branch no matter what `--compact-on-refusal` and `--verbose` say
+together (pinned by the "does nothing to a run that was not refused" case
+in tests/output-text.test.ts's compact-mode describe block).
+
+That single writer is what makes the compact body safe to still call a
+`RunResult` even though it never prints a gate section: every outcome
+`refusedTrustBase` produces is synthesized through `preparationFailed`
+(src/run.ts:313-315) rather than run, so a `RunResult` that reaches the
+compact branch by construction has no gate that actually executed for the
+compact body to be hiding. This is not true by accident of the current two
+call sites; it is true because `refusal` has exactly one writer. A future
+second writer that sets `refusal` on a `RunResult` which also carries real
+gate outcomes would break this invariant silently -- the compact branch
+would start swallowing an actual gate section -- and would need to be
+weighed against this note rather than added without noticing what it
+changes.
+
+## A gate that could not run says so, and is never mistaken for a missing tool
+
+Learned from an incident on 2026-09-22, in which an adopter's gate posted a
+red check having scanned nothing for two days and the only visible symptom
+was `conductor: command not found`. The reasoning is in
+docs/design-notes.md, "Why a failed signature check must say so". Four rules
+hold it shut, and each is pinned.
+
+**The PATH write precedes the signature audit.** action.yml:539 writes the
+install prefix to `GITHUB_PATH`; action.yml:555 is the audit. Ordered the
+other way, a failing audit left the install unreachable and the NEXT step
+reported a missing binary rather than a refusal. The PATH write grants
+nothing on its own, because the gates step does not run when the install
+step fails. Pinned by "puts the install on PATH before the signature audit,
+not after" in tests/action-hardening-drift.test.ts, which compares the two
+positions within the install step's own script and strips trailing comments
+as well as whole-line ones. Both halves were added after a reviewer defeated
+the first version by appending the phrase to an unrelated line as a trailing
+comment.
+
+**The audit's failure carries its reason.** action.yml:554-572 captures the
+audit through a command substitution, writes `verification-failed` and
+`verification-reason` to the step outputs, prints a workflow error naming
+that no gate ran, and then exits non-zero. Fail-closed is unchanged: the
+exit is still non-zero and the gates step still does not run. Pinned by
+"records why signature verification failed and still exits non-zero" in
+tests/action.test.ts, which strips trailing comments as well as whole-line
+ones before matching. Verified by replacing the real `exit` line with a
+no-op and keeping the original after a `#` on the same line: with the
+whole-line-only filter that left the entire suite green, and with the
+current filter it goes red.
+
+**Conductor invokes itself by absolute path.** `CONDUCTOR_BIN` is declared
+in the gates step and in the pull-request comment step, and both invoke
+`"$CONDUCTOR_BIN"` rather than a bare name. PATH still carries the prefix,
+because the umbrella resolves each GATE by name and that is the only thing
+that needs it. This matches dep-guard, vault-guard and intent-guard, which
+all call their own binaries by absolute path and document it as resistance
+to a workflow that prepends its own `node_modules/.bin`. Pinned by "invokes
+conductor by absolute path, never by bare name" in tests/action.test.ts,
+which asserts zero bare invocations and exactly two by `CONDUCTOR_BIN`.
+
+**An unverified umbrella is never executed to render a comment, and the
+guard accepts only if provably ok.** The comment step runs `if: always()`,
+so it reaches this point on a failed install. It branches on
+`verification-ok`, which the install step writes only AFTER the audit has
+passed, and runs the umbrella only when that is positively `true`.
+
+The direction matters and was got wrong first: keyed on a "did it fail"
+flag instead, every install failure OTHER than the audit itself left the
+flag unset and fell through to executing an umbrella nothing had verified.
+The packages are on disk from the install onward, so the root manifest
+write, the PATH write, and any fail-closed check a future edit adds between
+them are all places this step can die with nothing verified. This is the
+same rule the npm floor states a few hundred lines above, for the same
+reason.
+
+Pinned behaviourally by "actually skips the render run when verification
+failed, proven by running it" in tests/action-pr-comment.test.ts: the
+conductor stub leaves a marker, the test runs the step with NO flag set and
+asserts the marker is absent, asserts the note that was actually written
+carries the reason, and a control run with `verification-ok` asserts the
+marker appears.
+
+The redundant backstop is deliberate. scripts/pr-comment.mjs replaces an
+empty or whitespace-only report with a note saying the gate could not
+produce one. The action now branches before that point, so it should be
+unreachable -- and the incident this section exists for was three
+individually correct mechanisms composing into silence, which is why
+"unreachable by design" is not treated as load-bearing here.
+
+Not covered by any of the above, and named so a later reader does not
+mistake it for solved: the run-level conclusion stays green while the
+check-run goes red, so `gh run list` shows an unbroken history across a
+run whose gate did nothing. That is a property of the `continue-on-error`
+in the advisory recipe rather than of this action.

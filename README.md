@@ -89,6 +89,7 @@ conductor: clean, nothing blocked. 2 gate(s) ran: dependencies (dep-guard), secr
 A commit with a staged credential in it prints the full report and exits 1:
 
 ```
+conductor 0.4.5
 conductor run: 2 gate(s), 1 finding(s)
 
 dependencies  dep-guard 0.2.1  exit 0  251ms  via dep-guard on path
@@ -270,6 +271,12 @@ proceeds normally without mentioning them.
   report nobody can read.
 - `--verbose` prints the full per-gate report even when the run is clean.
   Text output only; the SARIF log never changes shape with it.
+- `--compact-on-refusal` shrinks the report to the version, the verdict and
+  the refusal reason when the trust base was refused and no gate ran,
+  instead of the full per-gate report. Built for the pull-request-comment
+  step. It has no effect on a run that was not refused, whatever `--verbose`
+  says. Text output only; it has no effect on the SARIF log and never
+  changes the exit code.
 - `--gate <role>`, repeatable. A gate the policy file enables and this flag
   leaves out is named as excluded, on one line in the text report and as a
   `conductor/gate-excluded` notification in the SARIF log's `conductor` run.
@@ -340,6 +347,15 @@ base branch with review required for `.github/workflows`, and no action can
 provide that for you. Only `pull_request_target` runs the base branch's copy
 of a workflow, and that event exposes the base's secrets to the pull
 request's code, which is the wrong trade for a gate over untrusted changes.
+
+One part of that is closed, and only one. Because the pins are written in a
+file the pull request controls, a pull request could otherwise pin a gate
+**backward** to a published version that predates the rule which would have
+caught it: an exact version, so the validate step's shape check accepts it,
+and a change that reads as ordinary version management. **On a pull request
+the action now refuses any of the four `*-version` inputs naming a version
+below the one the action tag ships.** Pinning forward is still accepted.
+See "The Action" below.
 
 So on a pull-request run a gate's program must be **outside the working tree**
 (on PATH, or an absolute `command:` elsewhere on the machine), or else meet
@@ -415,6 +431,12 @@ judged while still reporting pull-request mode as on. Pass the base
 commit, which is HEAD. If the base branch has no `.guardrails.yaml` at all,
 the run has no rules and exits 2 rather than using the pull request's; the
 file the pull request adds decides what runs once it is on the base branch.
+That is why adopting conductor takes one merge before the gates can judge
+anything, and it is not an oversight: the policy file can name a program to
+run, so a run that read it from the pull request would let the pull request
+choose its own judge on exactly the repositories that have no rules yet. See
+"Adopting conductor" below for the sequence and for how to see what your
+policy will do before you merge it.
 
 **Which gates are covered.** All three: dep-guard from **0.6.0**,
 intent-guard from **1.4.0**, vault-guard from **1.7.0**.
@@ -540,11 +562,58 @@ defaulting to the version this release pins. A validate step refuses anything
 that is not an exact version, a range and `latest` included: the version that
 judges a pull request has to be a decision taken on the base branch rather
 than one the registry takes on the morning of the run. An install step then
-runs `npm install -g` under the runner temp, never into the workspace, and
-prepends that bin directory to `PATH`, so the run step invokes `conductor` off
-`PATH` and each gate resolves by name the same way. The install is
-**unconditional**, on push and `pull_request` alike, so there is one code path
-rather than one that matters and one that nobody exercises.
+runs `npm install -g --ignore-scripts` under the runner temp, never into the
+workspace, and prepends that bin directory to `PATH`, so the run step invokes
+`conductor` off `PATH` and each gate resolves by name the same way. The install
+is **unconditional**, on push and `pull_request` alike, so there is one code
+path rather than one that matters and one that nobody exercises.
+
+**On a pull request those four inputs may not pin backward.** The shape check
+asks whether an input is an exact version; it says nothing about which one, and
+on a `pull_request` event the workflow file comes from the head, so the pins are
+written by the pull request being judged. Once a gate has two published versions
+that is a bypass with an innocent shape: pin back to the release that predates
+the rule which would have caught the change, and the change picks the rules it
+is judged by. So where `GITHUB_BASE_REF` is set, the validate step refuses an
+input naming a version below the one the action tag ships, naming both numbers,
+and the fix is to **remove the input**: the default is that version. Pinning
+**forward** is still accepted, on an assumption the rule does not enforce, that
+a newer gate is at least as strict; nothing bounds how far forward you pin.
+
+Three things follow from that, stated because the summary is wider than the rule.
+It fires on fork pull requests too, where the base repository's workflow file is
+the one that runs, so a deliberate backward pin you wrote yourself will refuse
+every fork run until you remove it. Push runs are out of scope rather than safe:
+a push to an unprotected branch runs that branch's own workflow file, written by
+the same author. And `merge_group` runs are not covered at all: `GITHUB_BASE_REF`
+is set on `pull_request` and `pull_request_target` only, so it is empty in a
+merge queue even though the queue branch carries the pull request's commits and
+its workflow file. If your only required check runs on `merge_group`, this rule
+does nothing for you; keep the `pull_request` run required as well and the pin is
+caught before the queue. Neither this nor anything else in `action.yml`
+replaces branch protection with review required for `.github/workflows`, which
+is still the only control over a pull request that edits the workflow.
+
+`--ignore-scripts` is there because the step holds the job's token and the four
+things it installs decide whether a pull request may merge; without it every
+package in the resolved tree would run code on the runner. The step then runs
+`npm audit signatures` over what it installed.
+
+**What that verification proves, and what it does not.** It asks the registry
+for each name and version in the tree, the four gates included, and checks the
+signature served back, so an unpublished, replaced or unsigned package fails the
+step. It does **not** read the installed files, so it will not detect a tampered
+install; it does **not** defeat a compromised registry, which signs what it
+serves; and a **missing** attestation is not a failure, so it does not require
+provenance even though all four packages publish it.
+
+> **This step needs a registry that serves `/-/npm/v1/keys`.** If your runner
+> points npm at a mirror or proxy that does not (via `actions/setup-node`'s
+> `registry-url:`, a corporate `~/.npmrc`, or `npm_config_registry`), the
+> install succeeds and this step then fails with `EMISSINGSIGNATUREKEY`. A
+> sigstore outage has the same effect. It fails closed on purpose, so that is a
+> red gate rather than a skipped check; pin to `@v0.4.0`, which does not
+> verify, if it blocks you.
 
 `--base` is passed only when the `base-ref` input names one; left empty, the
 umbrella reads `GITHUB_BASE_REF` itself and treats an empty value as "not a
@@ -564,6 +633,49 @@ Base-ref judging is the floor rather than a knob, and on a `pull_request`
 event the workflow file itself runs from the pull request's own ref, so an
 opt-out here would be settable by the very pull request the mode exists to
 judge: the knob and the thing it protects against would be the same file.
+
+**The normal way to use this is by tag, not by path.** `uses: ./` reads
+`action.yml` out of whichever tree the workflow runs against, which is
+correct only for this repository's own workflows testing themselves; on a
+pull request from anywhere else it would read `action.yml` out of the pull
+request being judged, and the version-pin protection described above
+"protects nothing" against a tree that controls its own judge (the
+validate step's own comment in `action.yml` says so in those words). Name
+this action by owner and tag instead:
+
+```yaml
+name: guardrails
+on: pull_request
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.11.0'
+      - id: conductor
+        uses: vaultcompasshq/conductor@v0.4.5
+        with:
+          output: conductor.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: ${{ steps.conductor.outputs.sarif }}
+```
+
+No version inputs there at all: left out, the four gates run at the versions
+this tag ships, which is the intended default. The fully spelled-out example
+below adds explicit version pins and comments explaining each one, for a
+workflow that wants that transparency; the four lines can still be left out
+entirely to take the tag's own versions, exactly as the form above does.
 
 ```yaml
 name: guardrails
@@ -587,14 +699,18 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # Not a bare major: Node 22.0.0 ships npm 10.5.1, which the action
+          # refuses because that client reports a clean install as tampered
+          # with. 22.1.0 or later, or 20.13.0 or later, carries an npm that
+          # can verify.
+          node-version: '22.11.0'
           cache: pnpm
       # Your own dependencies. The gates are NOT among the things this has to
       # install: the action installs those itself, globally, at the versions
       # pinned below.
       - run: pnpm install --frozen-lockfile
       - id: conductor
-        uses: ./
+        uses: vaultcompasshq/conductor@v0.4.5
         with:
           output: conductor.sarif
           # Exact versions, never a range and never "latest". These four
@@ -602,11 +718,13 @@ jobs:
           # request's own lockfile no longer does. They are only as protected
           # as this file is: require review on .github/workflows in your
           # branch protection. Bump them like any other pin, in a pull
-          # request of their own.
-          conductor-version: 0.4.0
-          dep-guard-version: 0.6.0
-          vault-guard-version: 1.7.0
-          intent-guard-version: 1.4.0
+          # request of their own. Forward only on a pull request: the action
+          # refuses a pin below what its tag ships, and the four lines can be
+          # left out entirely to take that tag's own versions.
+          conductor-version: 0.4.5
+          dep-guard-version: 0.7.0
+          vault-guard-version: 1.8.0
+          intent-guard-version: 1.5.2
       - uses: github/codeql-action/upload-sarif@v3
         # Always: the log is most worth having on the run that failed.
         if: always()
@@ -627,7 +745,191 @@ runs whatever its author pushes to it next. Pin every third-party action by
 commit digest in a workflow you actually run, the way this repository's own
 workflows do.
 
+### Running the gates as an advisory check
+
+To run the gates without blocking a merge, set `continue-on-error: true` on the
+`conductor` step and leave the check not required in branch protection. Set a
+step `timeout-minutes` as well. `continue-on-error` swallows a failing exit
+code, but it does not bound a step that hangs: on a required job a stuck run
+still drags the job to its own job-level limit and blocks the very merge the
+advisory setting was meant to leave alone. The Action already caps each gate's
+own subprocess at 120 seconds and reports a gate that exceeds it as
+could-not-run, so a step `timeout-minutes` is an outer bound around the whole
+run rather than the primary control.
+
+A complete copy-paste job, rather than the one step above in isolation:
+
+```yaml
+name: guardrails-advisory
+on: pull_request
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        continue-on-error: true
+        with:
+          node-version: '22.11.0'
+      - name: Fetch the base ref
+        continue-on-error: true
+        run: git fetch origin "$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF"
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+      - id: conductor
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: vaultcompasshq/conductor@v0.4.5
+        with:
+          pr-comment: true
+```
+
+Every fallible step above, the checkout, the node setup, the explicit fetch,
+and the conductor step itself, carries `continue-on-error: true`, because a
+required job must never go red over an advisory step that hung or failed.
+`action.yml` already shallow-fetches the trust base itself as of 0.4.5 when
+the checkout does not already carry it (see the changelog entry for that
+version), so the explicit "Fetch the base ref" step above is belt and
+braces, not a requirement; it is here so the recipe still resolves the base
+ref on an action version that predates that self-fetch. `pr-comment: true`
+is what makes the advisory finding visible at all: a `pull_request` check
+that is not required posts nothing anywhere else a developer would look, so
+without it the run's only trace is a green-looking step nobody opens. See
+"The report as a pull request comment" below for what that input needs and
+what it does on a fork.
+
+### Adopting conductor
+
+The first pull request cannot be judged by the policy it adds. Plan for two
+steps rather than being surprised by one:
+
+1. On a branch, run `conductor init`, then run `conductor run --verbose` on
+   your own checkout. That is the full report your policy will produce, with
+   no `--trust-base` involved: a direct run on your own checkout is already
+   inside the trust boundary, so it reads the policy you just wrote. This is
+   where you tune thresholds, not on a pull request.
+2. Open the pull request with `.guardrails.yaml` and the workflow together,
+   and set `continue-on-error: true` on the conductor step for it. The step
+   is inert on this pull request: the base branch has no policy yet, so the
+   run has no rules, exits 2, and posts a comment saying so with the remedy
+   on it. That is the honest report of an unfinished adoption, not a broken
+   tool.
+3. Merge. Every pull request after that is judged by the policy on the base
+   branch, and a change to that policy shows up as a proposal line and takes
+   effect after its own merge.
+
+There is deliberately no mode in which the pull request's own policy file
+decides the run, not even as a preview: the preview in step 1 gives you the
+same report without putting a file the pull request controls behind a
+verdict on the pull request page.
+
 ### The report as a pull request comment
+
+**Built in, opt-in.** This matters most for an advisory job: a `pull_request`
+check that is not marked required does not block anything when it fails, and
+without a comment its findings live only in the job's exit code and log,
+which teaches a developer nothing. Set `pr-comment: true` on the Action's own
+step and add `pull-requests: write` to the job's `permissions`:
+
+```yaml
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    steps:
+      # ... checkout, pnpm, setup-node, install, as in the example above ...
+      - id: conductor
+        uses: vaultcompasshq/conductor@v0.4.5
+        with:
+          output: conductor.sarif
+          pr-comment: true
+```
+
+That posts conductor's own text report, the one the README quotes above
+("conductor: clean, nothing blocked. 2 gate(s) ran: ..."), as a comment on
+the pull request. It is **sticky**: a hidden marker in the comment body lets
+a re-run find and update that same comment, so a push does not pile up a new
+comment every time, the way the manual recipe below does. It runs on a
+`pull_request` or `pull_request_target` event only, and it runs whether the
+gates step passed or failed, since a blocking run is the one an advisory
+check most needs a developer to actually see. The first line of every
+comment carries the version of conductor that produced it, and when the
+trust base was refused and no gate ran at all, the comment shrinks to the
+version, the verdict, and the refusal reason (with its remedy, when one
+applies) rather than the full per-gate report, so an adopter with no policy
+on the base ref yet does not get a full sticky comment whose only content is
+"refused, nothing checked" on every push.
+
+**It is a no-op on a pull request from a fork.** The default `GITHUB_TOKEN`
+there is read-only regardless of the `pull-requests: write` permission you
+grant, so the post fails; the step catches that, prints a `::warning::`
+naming the likely cause, and continues. The gate's own pass/fail is decided
+entirely by the earlier "Run the gates" step and never depends on whether
+the comment posted, on a fork or anywhere else. `pull_request_target` runs
+with a writable token and the base repository's own workflow instead, which
+is a different security decision to take on purpose rather than a flag to
+add; nothing here does that for you.
+
+Off by default, so an existing consumer of this action is unaffected.
+
+**The sticky match only ever adopts conductor's own comment.** On
+`pull_request_target` this step runs with a write token even though the
+pull request itself is untrusted, so anyone who can comment on the pull
+request could, in principle, author a comment carrying the same hidden
+marker before conductor's first run. The match requires the marker AND that
+the comment was authored by the GitHub Actions bot; a marker in anyone
+else's comment is never adopted, and conductor creates its own comment
+instead, exactly as if no marked comment existed.
+
+**Running this Action more than once against the same pull request** (for
+example, once per package in a monorepo) needs its own marker per run, or
+those runs fight over one shared comment. Set `pr-comment-marker` to a
+distinct string per invocation and each run stays sticky to its own
+comment; left unset (the default), every invocation uses the same built-in
+marker, which is the existing, unchanged behaviour for a single invocation
+per pull request.
+
+```yaml
+      - id: conductor-package-a
+        uses: vaultcompasshq/conductor@v0.4.5
+        with:
+          pr-comment: true
+          pr-comment-marker: 'package-a'
+      - id: conductor-package-b
+        uses: vaultcompasshq/conductor@v0.4.5
+        with:
+          pr-comment: true
+          pr-comment-marker: 'package-b'
+```
+
+**A note for anyone changing this surface, not for a consumer of the
+Action**: the comment body reaches `gh` with `-F body=@<file>` (`gh api`'s
+file-read form), never `-f`, which sends the value as a literal string
+instead of reading the file. The offline test suite
+(`scripts/tests/pr-comment.test.mjs`, `scripts/tests/pr-comment-cli.test.mjs`)
+replaces `gh` with a recorder or a shim, and neither can tell `-f` from `-F`
+apart, since both simply accept a `key=value` string and neither actually
+reads the `@file` form. `scripts/tests/pr-comment-smoke.test.mjs` is what
+actually proves the distinction, against a real `gh` binary; it is skipped
+by an ordinary offline `pnpm test` run and only runs with `GH_TOKEN` (or
+`GITHUB_TOKEN`), `CONDUCTOR_PR_COMMENT_SMOKE_REPO`, and
+`CONDUCTOR_PR_COMMENT_SMOKE_ISSUE` set. Run it for real against a scratch
+issue or pull request before any release that touches
+`scripts/lib/pr-comment.mjs` or `scripts/pr-comment.mjs`; the file itself
+documents the exact invocation.
+
+**The manual recipe below still has a reason to exist**: a non-sticky
+comment (one per run, never edited), a report you want to post yourself with
+different formatting, or a workflow that would rather not add
+`pull-requests: write` to the same job the gates run in. For the common
+case, `pr-comment: true` is the built-in answer.
 
 The SARIF upload produces no alerts on a private repository without GitHub
 Code Security, which is why that step carries `continue-on-error`. A comment
@@ -730,6 +1032,8 @@ report collapses to one line, the rule separating a SARIF notification from a
 SARIF result, how the exit code is composed, and the mechanism behind the
 intent gate at a pull request. Several of them were learned from running this
 tool against real repositories rather than reasoned out in advance.
+
+Adopter feedback is a row in [FINDINGS.md](FINDINGS.md). How to change this repository is in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

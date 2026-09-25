@@ -814,9 +814,17 @@ describeE2E('dogfood: a real clone, the real gates, a real commit', () => {
           "const token = 'ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';\nmodule.exports = token;\n"
         );
         // The pull request's own muting: ignore the file it just added.
+        //
+        // `ignore` takes an object of path/pattern lists, not a bare array;
+        // that has been the only shape vault-guard's own schema accepts
+        // since 1.0.0. A bare array here used to slip past silently in this
+        // fixture but a current vault-guard build now refuses it outright
+        // (config error, exit 1) instead of applying it, which turned this
+        // case into a false pass: the gate never actually read the ignore
+        // rule the test means to exercise.
         writeFileSync(
           path.join(clone, '.vault-guard.json'),
-          `${JSON.stringify({ ignore: ['leak.js'] }, null, 2)}\n`
+          `${JSON.stringify({ ignore: { paths: ['leak.js'] } }, null, 2)}\n`
         );
         git(['add', '-A']);
         git(['commit', '--quiet', '-m', 'feat: tidy up the scanner config']);
@@ -825,7 +833,14 @@ describeE2E('dogfood: a real clone, the real gates, a real commit', () => {
       it('obeys the pull request own config when no trust base is passed', () => {
         const result = conductor(['run', '--verbose']);
 
-        expect(result.stdout).toMatch(/vault-guard 1\.7\.0/);
+        // Version-agnostic on purpose: this case is about the gate reading
+        // and applying its own config, not about which vault-guard build is
+        // installed. Pinning the exact version here went stale the moment a
+        // newer build changed nothing about the behavior under test, so the
+        // check is "the secrets gate ran to completion under whatever
+        // vault-guard is wired in" (any semver, exit 0, not a config error
+        // or a DID NOT RUN) rather than a specific number.
+        expect(result.stdout).toMatch(/secrets\s+vault-guard\s+\d+\.\d+\.\d+\s+exit 0/);
         expect(result.stdout).not.toMatch(/vault-guard\/github-token/);
       });
 

@@ -18,6 +18,34 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: Refuse pull requests with bot co-author trailers
+      if: github.event_name == 'pull_request'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        pattern='^Co-authored-by:.*(cursoragent@cursor\.com|noreply@anthropic\.com|\[bot\])'
+        commits_json="$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/commits" | jq -s 'add')"
+        count="$(echo "$commits_json" | jq 'length')"
+        failures=0
+        while IFS= read -r commit; do
+          sha="$(echo "$commit" | jq -r '.sha')"
+          message="$(echo "$commit" | jq -r '.commit.message')"
+          trailer="$(printf '%s\n' "$message" | grep -iE "$pattern" || true)"
+          if [ -n "$trailer" ]; then
+            echo "Offending commit: $sha"
+            echo "Trailer: $trailer"
+            echo "Co-author trailers from editor agents put a bot account in the contributors graph; remove the trailer with git commit --amend and re-push."
+            failures=1
+          fi
+        done < <(echo "$commits_json" | jq -c '.[]')
+        if [ "$failures" -eq 1 ]; then
+          exit 1
+        fi
+        echo "Checked $count commit(s) for bot co-author trailers; none found."
+
     - name: Checkout code
       uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 

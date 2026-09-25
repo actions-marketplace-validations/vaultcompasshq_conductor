@@ -54,22 +54,46 @@ inputs:
       range would hand that decision to whatever the registry served on the
       morning of the run. The pin is only as protected as the workflow file
       is; see the note above the install step.
-    default: 0.4.0
+    default: 0.4.5
   dep-guard-version:
     description: >-
       The exact version of the dependency gate this action installs. Same
       rule as conductor-version.
-    default: 0.6.0
+    default: 0.7.0
   vault-guard-version:
     description: >-
       The exact version of the secrets gate this action installs. Same rule
       as conductor-version.
-    default: 1.7.0
+    default: 1.8.0
   intent-guard-version:
     description: >-
       The exact version of the intent gate this action installs. Same rule as
       conductor-version.
-    default: 1.4.0
+    default: 1.5.2
+  pr-comment:
+    description: >-
+      Set to exactly "true" to post conductor's own text report as a pull
+      request comment, for an advisory (non-required) run whose findings
+      would otherwise live only in the job's exit code and log. Off by
+      default, so an existing consumer is unaffected; this is opt-in.
+      Only fires on a pull_request or pull_request_target event. STICKY: a
+      hidden marker in the comment body lets a re-run find and update the
+      same comment rather than adding a new one every push. Needs
+      `permissions: pull-requests: write` on the calling job, or the write
+      fails; it is also a no-op on a pull request from a fork, where the
+      default GITHUB_TOKEN is read-only regardless of that permission. Either
+      way the posting step warns and continues rather than failing the job:
+      the gate's own pass/fail never depends on whether the comment posted.
+    default: 'false'
+  pr-comment-marker:
+    description: >-
+      Overrides the hidden marker that makes the pull request comment
+      sticky. Only useful when this action runs more than once against the
+      same pull request in one workflow, for example once per package in a
+      monorepo: without a distinct marker per run, those runs would fight
+      over one shared comment. Leave it empty (the default) and the built-in
+      marker is used, which keeps existing behaviour unchanged.
+    default: ''
 
 outputs:
   sarif:
@@ -119,6 +143,11 @@ runs:
         DEP_GUARD_VERSION: ${{ inputs.dep-guard-version }}
         VAULT_GUARD_VERSION: ${{ inputs.vault-guard-version }}
         INTENT_GUARD_VERSION: ${{ inputs.intent-guard-version }}
+        # The pull-request test, taken from the EVENT PAYLOAD rather than from
+        # whatever environment the job happens to hand this step. Same spelling
+        # as the gates step below, which reads the same value for the same
+        # event. See the comment on the gate itself for why it is declared.
+        GITHUB_BASE_REF: ${{ github.base_ref }}
       run: |
         set -eu
 
@@ -128,7 +157,18 @@ runs:
         # on the morning of the run instead. Every one of the four is checked, and
         # all failures are reported before exiting, so a workflow with two
         # bad pins does not need two runs to learn that.
-        SEMVER='^[0-9]+\.[0-9]+\.[0-9]+$'
+        #
+        # NO LEADING ZEROS IN ANY OF THE THREE NUMBERS. `01.2.3` and `0.6.00`
+        # are not semver, so npm does not read them as versions at all: a spec
+        # it cannot parse as a version falls back to being treated as a
+        # DIST-TAG, which is the exact family this check exists to refuse.
+        # These four inputs are fed straight into
+        # `npm install -g @vaultcompass/...@<version>`, the same as the
+        # sibling scanners' own version input, and their shape check
+        # (`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`) is matched
+        # here for the same reason: a plain `[0-9]+` three times would let
+        # every one of them through.
+        SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
         status=0
         for pair in \
           "conductor-version:$CONDUCTOR_VERSION" \
@@ -143,8 +183,158 @@ runs:
           fi
         done
         if [ "$status" -ne 0 ]; then
-          echo "A range, a dist-tag such as latest, or anything else is refused. The versions that judge a pull request are pinned in the workflow file, so that the choice of program is a decision written down there and not one the registry makes on the morning of the run." >&2
+          echo "A range, a dist-tag such as latest, a version with a leading zero such as 01.2.3, or anything else is refused. The versions that judge a pull request are pinned in the workflow file, so that the choice of program is a decision written down there and not one the registry makes on the morning of the run." >&2
           exit 1
+        fi
+
+        # A SECOND CHECK, ON ONE EVENT ONLY: on a pull request, none of the
+        # four inputs may ask for a version OLDER than the one this action tag
+        # ships.
+        #
+        # THE HOLE. The check above asks whether an input is an exact version.
+        # It says nothing about WHICH one. On a same-repo pull_request event
+        # GitHub runs the workflow file from the HEAD, so all four of these
+        # inputs are written by the pull request being judged, and the moment a
+        # gate has two published versions a pull request can pin back to the
+        # one that predates the rule that would have caught it, clear the shape
+        # check, and be judged by the rule set it chose for itself. That is not
+        # hypothetical, and not only for one input: EVERY ONE of the four has
+        # published versions below its constant here. Counted from the registry
+        # on 2026-09-18, 46 of them: conductor 0.2.0 through 0.3.0 is 6 below
+        # 0.4.0, dep-guard 8 below 0.6.0, vault-guard 25 below 1.7.0, and
+        # intent-guard 7 below 1.5.2, intent-guard 1.4.0 among them.
+        #
+        # This is the same class of hole as an input that turns pull-request
+        # mode off, which the trust-base input above refuses to offer for
+        # exactly this reason. The difference is what a reviewer sees: deleting
+        # a control reads as deleting a control, while a line reading
+        # intent-guard-version: 1.4.0 reads as ordinary version management.
+        #
+        # FORWARD STAYS ALLOWED, ON AN ASSUMPTION THIS RULE DOES NOT ENFORCE.
+        # The rule assumes a newer gate is at least as strict as the one this
+        # tag ships. Nothing here checks that, and forward pins are not
+        # bounded: any higher version is accepted, including one that does not
+        # exist yet and one whose rules turn out to be weaker. The four inputs
+        # exist so a consumer can pin forward. Only the backward direction, on
+        # the one event where the workflow file is written by the side under
+        # judgment, is refused.
+        #
+        # SEPARATE CONSTANTS FROM ANY FLAG FLOOR, and the two must not be
+        # merged even where they hold the same number. TRUST_BASE_MIN_VERSION
+        # in src/gate-runner.ts is FLAG COMPATIBILITY: the oldest build of each
+        # gate that understands --trust-base, raised in the commit that starts
+        # passing a newer flag. These are THE TESTED VERSIONS THIS TAG SHIPS,
+        # and they move with the pins above. One constant serving both is how
+        # raising one silently raises the other. They already disagree:
+        # intent-guard's floor is 1.4.0 and this tag ships 1.5.2.
+        #
+        # COMPARED AGAINST THESE HARDCODED CONSTANTS, never against anything
+        # derived from an input. An input looks identical whether the consumer
+        # pinned the current version or the default supplied it, so the step
+        # cannot tell a pin from a default, and the constant is the only source
+        # of truth. It is safe to trust because action.yml comes from the ref
+        # the consumer's workflow names, not from the pull request's tree.
+        #
+        # THAT HOLDS WHEN THE CONSUMER NAMES THIS ACTION BY OWNER AND REF, as
+        # vaultcompasshq/conductor at a tag. A LOCAL-PATH reference instead,
+        # the ./ form, reads action.yml out of the pull request's OWN tree, so
+        # these constants are author-controlled there and this rule protects
+        # nothing. This repository's own workflows reference it that way, which
+        # is the usual reason to.
+        TAG_CONDUCTOR_MAJOR=0
+        TAG_CONDUCTOR_MINOR=4
+        TAG_CONDUCTOR_PATCH=5
+        TAG_DEP_GUARD_MAJOR=0
+        TAG_DEP_GUARD_MINOR=7
+        TAG_DEP_GUARD_PATCH=0
+        TAG_VAULT_GUARD_MAJOR=1
+        TAG_VAULT_GUARD_MINOR=8
+        TAG_VAULT_GUARD_PATCH=0
+        TAG_INTENT_GUARD_MAJOR=1
+        TAG_INTENT_GUARD_MINOR=5
+        TAG_INTENT_GUARD_PATCH=2
+
+        # ONE COMPARISON, CALLED FOUR TIMES. Four hand-written copies would be
+        # four places for one to drift into a weaker shape, on a check where
+        # the weaker shape is the whole failure.
+        #
+        # WRITTEN AS "ACCEPT ONLY IF PROVABLY NEW ENOUGH", NOT "REFUSE IF
+        # OLD", the same shape and for the same reason as the npm floor in the
+        # install step. `[` exits 2 on a malformed or out-of-range comparison
+        # and an `if` reads that 2 as false, so a refuse-if shape turns an
+        # arithmetic error into permission, on the one check whose entire job
+        # is to refuse. Here an error leaves pin_ok at 0 and the step refuses,
+        # so the direction of failure is closed by construction rather than by
+        # getting every expression right.
+        #
+        # Component by component, never as text: 1.10.0 sorts BELOW 1.5.2 as a
+        # string and above it as a version, so a lexicographic check would
+        # refuse the forward pin this rule deliberately leaves open.
+        pin_not_backward() {
+          pin_value="$1"
+          tag_major="$2"
+          tag_minor="$3"
+          tag_patch="$4"
+          pin_major="${pin_value%%.*}"
+          pin_rest="${pin_value#*.}"
+          pin_minor="${pin_rest%%.*}"
+          pin_patch="${pin_rest#*.}"
+          pin_ok=0
+          if [ "$pin_major" -gt "$tag_major" ] 2>/dev/null; then
+            pin_ok=1
+          elif [ "$pin_major" -eq "$tag_major" ] 2>/dev/null; then
+            if [ "$pin_minor" -gt "$tag_minor" ] 2>/dev/null; then
+              pin_ok=1
+            elif [ "$pin_minor" -eq "$tag_minor" ] 2>/dev/null && [ "$pin_patch" -ge "$tag_patch" ] 2>/dev/null; then
+              pin_ok=1
+            fi
+          fi
+          [ "$pin_ok" -eq 1 ]
+        }
+
+        # Reports and records, so that all four are reported before exiting,
+        # the same as the shape check above: a workflow with two backward pins
+        # should not need two runs to learn about the second one.
+        check_pin() {
+          if pin_not_backward "$2" "$3" "$4" "$5"; then
+            return 0
+          fi
+          printf 'conductor: on a pull request the %s input may not ask for a version older than the one this action tag ships. It asks for %s, and this tag ships %s.%s.%s.\n' \
+            "$1" "$2" "$3" "$4" "$5" >&2
+          pin_status=1
+        }
+
+        # GITHUB_BASE_REF BEING NON-EMPTY IS THE PULL-REQUEST TEST, and it is
+        # the same one the run step uses to decide whether to pass
+        # --trust-base. A second detector for the same event would be a second
+        # thing to keep in step. Actions defines the variable and leaves it
+        # EMPTY outside a pull request, so empty has to read as "not a pull
+        # request" here exactly as it does there.
+        #
+        # DECLARED IN THIS STEP'S ENV MAPPING, from the github.base_ref
+        # expression, so the value cannot come from the workflow file even if
+        # the platform guarantee failed. (Written without the expression
+        # delimiters on purpose: an expression inside a run block is expanded
+        # by Actions, comment or not.) The obvious bypass is a job-level
+        # env: GITHUB_BASE_REF: "", written by the same pull request that
+        # writes the pins. A step-level env entry wins over a job-level one,
+        # and github.base_ref is read out of the event payload rather than out
+        # of anything the workflow author writes, so the declared form closes
+        # that bypass on its own. The platform guarantee that the default
+        # GITHUB_ and RUNNER_ variables cannot be overwritten is the SECOND
+        # line of defence and is recorded in docs/INVARIANTS.md; this step does
+        # not depend on it.
+        if [ -n "${GITHUB_BASE_REF:-}" ]; then
+          pin_status=0
+          check_pin conductor-version "$CONDUCTOR_VERSION" "$TAG_CONDUCTOR_MAJOR" "$TAG_CONDUCTOR_MINOR" "$TAG_CONDUCTOR_PATCH"
+          check_pin dep-guard-version "$DEP_GUARD_VERSION" "$TAG_DEP_GUARD_MAJOR" "$TAG_DEP_GUARD_MINOR" "$TAG_DEP_GUARD_PATCH"
+          check_pin vault-guard-version "$VAULT_GUARD_VERSION" "$TAG_VAULT_GUARD_MAJOR" "$TAG_VAULT_GUARD_MINOR" "$TAG_VAULT_GUARD_PATCH"
+          check_pin intent-guard-version "$INTENT_GUARD_VERSION" "$TAG_INTENT_GUARD_MAJOR" "$TAG_INTENT_GUARD_MINOR" "$TAG_INTENT_GUARD_PATCH"
+          if [ "$pin_status" -ne 0 ]; then
+            echo "On a same-repo pull_request event GitHub runs the workflow file from the pull request head, so on that event this file belongs to the pull request. An older gate here would let a change choose the rules it is judged by." >&2
+            echo "REMOVE the input and this cannot happen: the default is the version this action tag ships. Pinning FORWARD is still accepted on a pull request, on the assumption that a newer gate is at least as strict; the rule does not bound how far forward you pin." >&2
+            exit 1
+          fi
         fi
 
     # UNCONDITIONAL, on push and on pull_request alike, so there is one code
@@ -177,26 +367,238 @@ runs:
       run: |
         set -eu
         mkdir -p "$npm_config_prefix"
-        npm install -g \
+
+        # THE VERIFICATION BELOW NEEDS A RECENT npm, AND SAYS SOMETHING
+        # ALARMING AND FALSE ON AN OLD ONE.
+        #
+        # `npm audit signatures` is not version-stable. Below 10.5.2 it fails
+        # on a CLEAN, untampered install of these very packages, because the
+        # client's bundled keys and TUF root are stale rather than because
+        # anything is wrong:
+        #
+        #   npm 10.2.4  EEXPIREDSIGNATUREKEY, "the corresponding public key
+        #               has expired 2025-01-29"
+        #   npm 10.5.0  "5 packages have invalid attestations ... Someone might
+        #               have tampered with these packages since they were
+        #               published on the registry!"
+        #
+        # Bisected against a real install of the four gates, with a COLD CACHE
+        # AND A FRESH HOME so no newer client could have primed the TUF root or
+        # the key set: 8.19.4, 9.9.4, 10.2.4, 10.5.0 and 10.5.1 all fail;
+        # 10.5.2 and every later version pass, with 10.5.2 verifying the same
+        # package and attestation counts as current npm rather than a reduced
+        # set. That maps to Node 18.19.x and 20.10 through 20.12, which
+        # `setup-node` will happily give a consumer today.
+        #
+        # AN EARLIER DRAFT PUT THE FLOOR AT 10.6.0 and was wrong by two patch
+        # versions, because its bisection tested 10.5.0 and then 10.6.0 and
+        # never tested what lay between them. Node 20.13.0 and 20.13.1 ship
+        # npm 10.5.2, so that floor refused working clients while telling them
+        # they could not verify. A floor set too high is a false accusation of
+        # a different kind from the one this check exists to prevent.
+        #
+        # This check exists so that a stale client is reported AS a stale
+        # client. Without it the gate tells a repository that its dependencies
+        # may have been tampered with, which is false, and is the same class of
+        # failure as reporting a scan that never ran as findings.
+        #
+        # Unlike its sibling actions, this one does not install Node itself --
+        # the documented workflow has the caller do that -- so the client here
+        # is whatever the consumer set up, and the floor has to be enforced
+        # rather than assumed.
+        # EXTRACTED, not validated-then-split, and this distinction has already
+        # cost two attempts.
+        #
+        # The first draft compared the raw string from `npm --version`: an
+        # unexpected answer made the comparison error, the `if` read false, and
+        # the floor let everything through. The second added
+        # `grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'` -- but grep matches PER LINE
+        # while the arithmetic below reads the WHOLE string, so a client that
+        # printed an upgrade notice above its version passed the shape check
+        # and then failed the comparison exactly as before:
+        #
+        #   [: npm notice a new version is available
+        #   10: integer expected
+        #
+        # and the floor was skipped again. Twice, in a guard whose entire
+        # reason for existing is that failing open was the bug.
+        #
+        # So: pull the first version-shaped token out of the output and work
+        # only with that. A line of notice above the version is handled; an
+        # output with no version in it at all yields the empty string and is
+        # refused below. `|| true` because grep exits 1 on no match and this
+        # runs under `set -e`.
+        NPM_VERSION="$(npm --version 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
+        if [ -z "$NPM_VERSION" ]; then
+          printf '::error::conductor: could not read an npm version to check. Refusing rather than assuming the client can verify signatures.\n'
+          exit 1
+        fi
+        NPM_MAJOR="${NPM_VERSION%%.*}"
+        NPM_REST="${NPM_VERSION#*.}"
+        NPM_MINOR="${NPM_REST%%.*}"
+        NPM_PATCH="${NPM_REST#*.}"
+
+        # WRITTEN AS "ACCEPT ONLY IF PROVABLY OK", NOT "REFUSE IF BAD".
+        #
+        # `[` returns 2 on a malformed comparison, and an `if` reads 2 as
+        # false. A refuse-if-bad shape therefore turns any arithmetic error
+        # into permission to proceed, which is precisely how the first two
+        # versions of this guard failed open. Here an error leaves NPM_OK at 0
+        # and the step refuses, so the direction of failure is closed by
+        # construction rather than by getting an expression right.
+        NPM_OK=0
+        if [ "$NPM_MAJOR" -gt 10 ] 2>/dev/null; then
+          NPM_OK=1
+        elif [ "$NPM_MAJOR" -eq 10 ] 2>/dev/null; then
+          if [ "$NPM_MINOR" -gt 5 ] 2>/dev/null; then
+            NPM_OK=1
+          elif [ "$NPM_MINOR" -eq 5 ] 2>/dev/null && [ "$NPM_PATCH" -ge 2 ] 2>/dev/null; then
+            NPM_OK=1
+          fi
+        fi
+
+        if [ "$NPM_OK" -ne 1 ]; then
+          printf '::error::conductor: npm %s cannot verify package signatures. This action needs npm 10.5.2 or newer; below that, npm reports valid packages as tampered with because its own bundled keys are stale.\n' "$NPM_VERSION"
+          printf '::error::Pin a Node release that carries a newer npm: 20.13.0 or later, or 22.1.0 or later. A bare major is not enough, because Node 22.0.0 ships npm 10.5.1. Or pin vaultcompasshq/conductor@v0.4.0, which does not verify.\n'
+          exit 1
+        fi
+
+        # `--ignore-scripts`, because this step runs on a runner holding the
+        # job's token and the four things it installs are CONTROL INPUTS: they
+        # decide whether a pull request is allowed to merge. Without the flag,
+        # every package in the resolved tree gets arbitrary code execution
+        # here, on every run, which is a strange amount of trust to extend
+        # from the tools whose job is deciding whether this repository can be
+        # trusted.
+        #
+        # Checked against the real registry rather than assumed to carry over
+        # from any one gate: all four install and report their own versions
+        # correctly with the flag set.
+        npm install -g --ignore-scripts \
           "@vaultcompass/conductor@$CONDUCTOR_VERSION" \
           "@vaultcompass/dep-guard@$DEP_GUARD_VERSION" \
           "@vaultcompass/vault-guard@$VAULT_GUARD_VERSION" \
           "@vaultcompass/intent-guard@$INTENT_GUARD_VERSION"
-        # On PATH for the steps after this one rather than called by an
-        # absolute path. The umbrella resolves each gate by NAME, so the gates
-        # have to be findable the same way the umbrella is.
+
+        # A ROOT MANIFEST, WITHOUT WHICH THE NEXT COMMAND SKIPS ALL FOUR GATES.
+        #
+        # `npm audit signatures` audits the tree's EDGES OUT: it loads the
+        # local prefix and walks what the root declares as dependencies. A
+        # global install leaves `<prefix>/lib` holding a `node_modules` and NO
+        # manifest, so the root declares nothing and the four packages just
+        # installed are on the far end of no edge. Their transitive
+        # dependencies are, so those get audited and the gates do not.
+        #
+        # Measured on this exact four-package tree: 32 signatures and 8
+        # attestations without this file, 36 and 12 with it. The four missing
+        # ones are the four gates. The single-package version of this step
+        # shipped in vault-guard without the manifest and recorded the short
+        # count as evidence that it worked.
+        printf '{"name":"conductor-action-verify","private":true,"dependencies":{"@vaultcompass/conductor":"%s","@vaultcompass/dep-guard":"%s","@vaultcompass/vault-guard":"%s","@vaultcompass/intent-guard":"%s"}}\n' \
+          "$CONDUCTOR_VERSION" "$DEP_GUARD_VERSION" "$VAULT_GUARD_VERSION" "$INTENT_GUARD_VERSION" \
+          > "$npm_config_prefix/lib/package.json"
+
+        # WHAT THIS COMMAND PROVES, narrowly, because the tempting summary is
+        # false. It asks the registry for each name and version in the tree and
+        # checks the registry signature served back.
+        #
+        # It does NOT read the installed files: the manifest is refetched
+        # rather than anything on disk being hashed, so a tampered install is
+        # invisible to it. It does NOT defeat a compromised registry, which
+        # signs what it serves. And a MISSING attestation is not a failure,
+        # only a missing or invalid signature is, so it does not require
+        # provenance despite all four packages publishing it.
+        #
+        # What remains is worth having: every name and version in the tree, the
+        # four gates included, has to be one npmjs currently serves with a
+        # valid registry signature.
+        #
+        # Fails closed under `set -eu`, deliberately. KNOWN CONSEQUENCE: a
+        # consumer whose runner points npm at a mirror or proxy that does not
+        # serve `/-/npm/v1/keys` installs fine and then fails here with
+        # EMISSINGSIGNATUREKEY, and a sigstore or TUF outage does the same to
+        # everyone at once. Documented in the README rather than left to be
+        # discovered from a red required check.
+        # BEFORE the signature audit, deliberately. This line is bookkeeping,
+        # not a privilege grant: the gates step does not run when this step
+        # fails, so an early PATH entry grants nothing. Ordered AFTER a
+        # fail-closed check instead, the failure mode is a later step
+        # reporting a missing binary, which is what the 2026-09-22 incident
+        # looked like from the outside and is why nobody read it as a refusal
+        # for two days. See docs/design-notes.md, "Why a failed signature
+        # check must say so".
+        #
+        # The umbrella resolves each GATE by NAME, which is the reason the
+        # prefix goes on PATH at all. Conductor itself is invoked by absolute
+        # path, so this line is not what makes the umbrella reachable.
         #
         # THE LAYOUT ASSUMED HERE IS THE LINUX AND MACOS ONE, where a global
         # install puts its shims in <prefix>/bin. On Windows npm puts them in
         # the prefix directory itself, so this line would put an empty
         # directory on PATH and every gate would then be reported missing.
         printf '%s\n' "$npm_config_prefix/bin" >> "$GITHUB_PATH"
+        # CAPTURED rather than left to die bare, and this is the whole of the
+        # change: fail-closed is unchanged. The exit below is still non-zero
+        # and the gates step still does not run. What is different is that the
+        # REASON survives, so the run can say why nothing was checked.
+        #
+        # Left bare under `set -eu`, this line took its reason with it. The
+        # 2026-09-22 incident is what that costs: a sigstore hiccup, which the
+        # comment above already names as a KNOWN CONSEQUENCE, produced a
+        # skipped gates step and a later step reporting a missing binary. The
+        # predicted event arrived and was unrecognisable.
+        #
+        # In a subshell, so the cd cannot leak into anything added after it.
+        # `|| audit_status=$?` is exempt from `set -e`, the same idiom the
+        # pull request comment step already uses to guard its mktemp.
+        audit_status=0
+        audit_out="$( ( cd "$npm_config_prefix/lib" && npm audit signatures ) 2>&1 )" || audit_status=$?
+        printf '%s\n' "$audit_out"
+        if [ "$audit_status" -ne 0 ]; then
+          # Flattened to one line: this is read in a log and copied into a
+          # pull request comment, and npm's output is several lines with the
+          # offending package on its own.
+          # CR and tab as well as newline. A lone CR is a line terminator to
+          # the Actions runner's log reader, so text after one in an
+          # `::error::` argument would be read as a fresh line and honoured as
+          # its own workflow command. Not reachable from a fork today, since
+          # this text is npm's own output over versions a pull request cannot
+          # choose, but the flattening is presented here as the control and
+          # should actually be one.
+          audit_reason="$(printf '%s' "$audit_out" | tr '\n\r\t' '   ' | sed 's/  */ /g')"
+          printf 'verification-failed=true\n' >> "$GITHUB_OUTPUT"
+          printf 'verification-reason=%s\n' "$audit_reason" >> "$GITHUB_OUTPUT"
+          printf '::error::conductor: could not verify the gate packages against the registry, so no gate ran and nothing was checked. %s\n' "$audit_reason"
+          exit "$audit_status"
+        fi
+        # ACCEPT ONLY IF PROVABLY OK, not refuse if bad. The npm floor above
+        # says why, and says it was learned the hard way: a refuse-if-bad
+        # shape turns any unexpected failure into permission to proceed.
+        #
+        # This line is what later steps are allowed to act on. The packages
+        # are on disk from the install onward, so every line between there and
+        # here is a place this step can die with nothing verified: the root
+        # manifest write, the PATH write, and any check a future edit adds.
+        # Keyed on a "did it fail" flag instead, all of those would leave the
+        # comment step running an umbrella that was never verified at all.
+        printf 'verification-ok=true\n' >> "$GITHUB_OUTPUT"
 
     - name: Run the gates
       id: gates
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
+        # The binary the install step wrote, by ABSOLUTE PATH rather than by
+        # name, matching dep-guard, vault-guard and intent-guard. Two reasons,
+        # and the second one is why this changed. A bare name is resolved
+        # against PATH, which a workflow can prepend to. And resolving the
+        # umbrella by name means a PATH write that never ran looks like a
+        # missing tool rather than like the failure that skipped it, which is
+        # exactly how the 2026-09-22 incident presented.
+        #
+        # PATH still carries the prefix: the umbrella resolves each GATE by
+        # name, and that is the one thing that genuinely needs it.
+        CONDUCTOR_BIN: ${{ runner.temp }}/conductor-gates/bin/conductor
         # Read by the intent gate's pull-request flow: the event payload for a
         # Spec: line in the pull request body, the base ref for the change set,
         # and the head ref for the branch slug, since a pull request build is
@@ -205,6 +607,11 @@ runs:
         GITHUB_BASE_REF: ${{ github.base_ref }}
         GITHUB_HEAD_REF: ${{ github.head_ref }}
         BASE_REF: ${{ inputs.base-ref }}
+        # The base-ref fetch below runs non-interactively; without this a
+        # misconfigured runner could stall on a git credential prompt instead
+        # of failing fast. There is no timeout wrapper (no portable one on the
+        # bash runners), so this is the guard against the one hang path.
+        GIT_TERMINAL_PROMPT: '0'
         TRUST_BASE: ${{ inputs.trust-base }}
         SPEC: ${{ inputs.spec }}
         STAGE: ${{ inputs.stage }}
@@ -260,6 +667,62 @@ runs:
         if [ -n "$TRUST_BASE" ]; then
           ARGS+=(--trust-base "$TRUST_BASE")
         elif [ -n "${GITHUB_BASE_REF:-}" ]; then
+          # A SHALLOW, ONE-COMMIT FETCH OF JUST THE BASE BRANCH, so a
+          # shallow-checkout consumer does not get a spurious trust-base miss.
+          #
+          # THE HOLE THIS CLOSES. The default actions/checkout fetches
+          # depth: 1 -- the head commit alone -- so on that default,
+          # origin/$GITHUB_BASE_REF is not in the checkout at all and
+          # conductor's own git rev-parse / git show reads refuse it as a
+          # ref that does not resolve. That is the correct fail-closed
+          # answer to a ref that is genuinely unreachable, but to a consumer
+          # who never asked for the base branch it reads as "conductor is
+          # broken" rather than "the checkout does not carry it". One real
+          # consumer team hit exactly this and worked around it by adding
+          # their own fetch step; this closes the gap here instead, so every
+          # consumer does not have to discover the same workaround.
+          #
+          # GUARDED SO IT IS A NO-OP WHEN THE REF ALREADY RESOLVES: a
+          # consumer whose checkout already carries the base ref (a deeper
+          # fetch-depth, or a previous step that fetched it) pays nothing
+          # extra, and this never fetches more than once regardless of how
+          # many gates run.
+          #
+          # DEPTH 1 IS DELIBERATE AND IS NOT THE SAME FETCH THE INTENT GATE
+          # MAY WANT. conductor's own reads of a trust base (git show
+          # <ref>:./.guardrails.yaml, git rev-parse <ref>) never walk
+          # history: they read the one commit's tree, so its tip is enough.
+          # intent-guard's own change-set diff can need the merge base
+          # instead, which a depth-1 fetch of the branch tip does not carry
+          # once the branch has moved since the pull request forked from it;
+          # a consumer whose intent gate needs that still wants
+          # fetch-depth: 0 on their own checkout step. This fetch exists only
+          # to unblock conductor's OWN policy read, not to substitute for
+          # full history.
+          #
+          # NEVER HARD-FAILS. Both branches below are guarded by `if`, which
+          # `set -eu` does not trip on: a fetch that cannot succeed (no
+          # credentials persisted from checkout, no network reachable to
+          # origin, a fork pull_request's read-only token, or any other
+          # reason) is reported as a clear warning naming the exact command
+          # to add, and the run continues into conductor's own trust-base
+          # handling, which already fails closed with its own explanation.
+          # THE REFSPEC IS DELIBERATE, not just the ref name. `git fetch
+          # origin <ref>` alone only updates FETCH_HEAD -- it never creates
+          # or moves refs/remotes/origin/<ref> unless the remote's configured
+          # fetch refspec already covers that branch, which a single-branch
+          # shallow checkout's does not. Handing conductor
+          # --trust-base "origin/$GITHUB_BASE_REF" after a fetch that only
+          # touched FETCH_HEAD leaves the exact same unresolvable ref this
+          # step exists to fix. The explicit src:dst refspec is what actually
+          # creates the remote-tracking ref conductor is about to be asked
+          # to read.
+          if ! git rev-parse --verify --quiet "origin/$GITHUB_BASE_REF" >/dev/null 2>&1; then
+            if ! git fetch --depth=1 origin "$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF" >/dev/null 2>&1; then
+              printf '::warning::conductor: origin/%s is not in this checkout and could not be fetched. Add a step before this action that runs: git fetch --depth=1 origin %s:refs/remotes/origin/%s\n' \
+                "$GITHUB_BASE_REF" "$GITHUB_BASE_REF" "$GITHUB_BASE_REF"
+            fi
+          fi
           ARGS+=(--trust-base "origin/$GITHUB_BASE_REF")
         fi
         if [ -n "$SPEC" ]; then
@@ -269,4 +732,140 @@ runs:
         # node_modules/.bin/conductor: that is the head's own install, chosen
         # by the head's own lockfile, and running it would let a pull request
         # choose the program that judges it.
-        conductor "${ARGS[@]}"
+        "$CONDUCTOR_BIN" "${ARGS[@]}"
+
+    # OPT-IN, and OFF by an existing consumer's default. The README's own
+    # manual recipe ("The report as a pull request comment") already shows
+    # how to do this by hand: a second run of the gates in --format text,
+    # piped to `gh pr comment`. This step is the same idea, built in, made
+    # STICKY across re-runs with a hidden marker, and made FORK-SAFE: a
+    # posting failure warns and never fails the job.
+    #
+    # always(): composite-action steps stop after a failing prior step, and
+    # the gates step above is exactly the one that fails on a blocking
+    # finding. An advisory run's whole point is that a developer sees the
+    # finding, which is truest on the run that failed, so this step has to
+    # run then too. Nothing this step does can change the gates step's own
+    # exit code, which composite actions carry through in the failed-step
+    # shape regardless of what a later step does.
+    - name: Comment the report on the pull request
+      id: pr-comment
+      if: |
+        always() &&
+        inputs.pr-comment == 'true' &&
+        (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        # Set by the install step when it could not verify the packages, so
+        # this step can say that rather than reach for a binary that failed
+        # verification.
+        # VERIFICATION_OK is the one this step BRANCHES on, and it is set only
+        # after the audit has actually passed. REASON is for the message.
+        VERIFICATION_OK: ${{ steps.install.outputs.verification-ok }}
+        VERIFICATION_REASON: ${{ steps.install.outputs.verification-reason }}
+        # The same absolute path the gates step uses, for the same reasons.
+        # This step is where the missing-binary line actually surfaced on
+        # 2026-09-22, because it runs `if: always()` and so ran after the
+        # install step had already failed.
+        CONDUCTOR_BIN: ${{ runner.temp }}/conductor-gates/bin/conductor
+        # gh reads its token from GH_TOKEN itself; nothing here puts it on a
+        # command line. github.token is read-only on a fork pull_request,
+        # which is what makes the posting step below fail there -- see
+        # scripts/pr-comment.mjs, which turns that failure into a warning
+        # rather than letting it propagate.
+        GH_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        # The same four inputs the gates step reads, so this run can mirror
+        # it exactly. Read as variables rather than expanded into the
+        # script, the same as every other input in this file.
+        BASE_REF: ${{ inputs.base-ref }}
+        TRUST_BASE: ${{ inputs.trust-base }}
+        SPEC: ${{ inputs.spec }}
+        STAGE: ${{ inputs.stage }}
+        GITHUB_BASE_REF: ${{ github.base_ref }}
+        # The bundled script lives in THIS action's own tree, not the
+        # consumer's checkout, so it is reached by github.action_path rather
+        # than by a path relative to working-directory.
+        ACTION_PATH: ${{ github.action_path }}
+        # Empty by default. Only worth setting when this action runs more
+        # than once against the same pull request in one workflow (a
+        # monorepo running it per package), so each run's comment stays its
+        # own rather than fighting over one.
+        PR_COMMENT_MARKER: ${{ inputs.pr-comment-marker }}
+      run: |
+        set -eu
+
+        # A SECOND RUN OF THE GATES, purely to render the text report. The
+        # gates step above already wrote the verdict as SARIF; conductor has
+        # one format per run, so getting the human-readable report this
+        # action already documents (the README's own "conductor: clean,
+        # nothing blocked..." line) means asking again. `|| true`,
+        # deliberately: a blocking finding is this run's non-zero exit, and
+        # that verdict belongs to the gates step, not to this one.
+        #
+        # Guarded, deliberately: this assignment runs under `set -eu` before
+        # any `|| true` appears in the step. Left bare, a `mktemp` failure
+        # (a full /tmp, a locked-down runner) would abort this whole step
+        # non-zero and could flip an otherwise-passing job to failed over a
+        # step that only exists to post an advisory comment. The `|| { ... }`
+        # form is exempt from `set -e`: a command's failure inside an `||`
+        # list never triggers it, only a bare command's would.
+        REPORT_FILE="$(mktemp)" || {
+          echo "::warning::conductor: could not create a temporary file for the pull request comment step; skipping the pull request comment. The gate's own verdict is unaffected."
+          exit 0
+        }
+        # --compact-on-refusal: harmless on every other run, and it is what
+        # keeps an adopter with no policy on the base ref at all from getting
+        # a full sticky comment on every push whose entire content is
+        # "refused, nothing checked". See src/output-text.ts's TextOptions
+        # for the three lines it prints instead.
+        ARGS=(run --stage "$STAGE" --format text --verbose --compact-on-refusal --output "$REPORT_FILE")
+        if [ -n "$BASE_REF" ]; then
+          ARGS+=(--base "$BASE_REF")
+        fi
+        if [ -n "$TRUST_BASE" ]; then
+          ARGS+=(--trust-base "$TRUST_BASE")
+        elif [ -n "${GITHUB_BASE_REF:-}" ]; then
+          ARGS+=(--trust-base "origin/$GITHUB_BASE_REF")
+        fi
+        if [ -n "$SPEC" ]; then
+          ARGS+=(--spec "$SPEC")
+        fi
+        # NO RENDER RUN when the install could not be verified. At that point
+        # the umbrella is precisely the thing that failed verification, so
+        # running it to produce a comment would trust what was just refused.
+        #
+        # This step runs `if: always()`, which is right: the report is most
+        # worth having on the run that failed. Before this branch existed it
+        # meant reaching for a binary the failed install had left unusable,
+        # getting nothing, and posting the empty file anyway. That is the
+        # comment an adopter actually received on 2026-09-22.
+        #
+        # The last sentence is not decoration. A reader who sees "signature
+        # verification failed" on their own pull request will reasonably fear
+        # a compromise; the common cause is a transient outage and the comment
+        # has to say so, or it escalates a hiccup into an incident.
+        if [ "${VERIFICATION_OK:-}" = "true" ]; then
+          "$CONDUCTOR_BIN" "${ARGS[@]}" || true
+        else
+          {
+            printf '%s\n\n' 'Conductor could not run. The gate packages were not verified, so no gate ran and nothing was checked on this pull request. This is not a finding about this repository.'
+            printf '%s\n\n' "${VERIFICATION_REASON:-No reason was recorded. The job log has the failing step.}"
+            printf '%s\n' 'Conductor verifies its tools against the registry before running, and refuses to trust one it could not verify. A registry or sigstore outage produces this too.'
+          } > "$REPORT_FILE"
+        fi
+
+        # The report reaches the poster BY FILE PATH, never by interpolating
+        # its bytes into a command: it is conductor's own output, but it can
+        # carry a finding's text or a path taken from the scanned repository,
+        # and neither belongs on a command line. scripts/pr-comment.mjs reads
+        # it, wraps it in a fenced block behind a hidden sticky marker, and
+        # never exits non-zero: a posting failure -- most commonly a fork
+        # pull_request's read-only token -- prints a ::warning:: and returns.
+        NODE_ARGS=(--report "$REPORT_FILE" --pr "$PR_NUMBER" --repo "$GITHUB_REPOSITORY")
+        if [ -n "$PR_COMMENT_MARKER" ]; then
+          NODE_ARGS+=(--marker "$PR_COMMENT_MARKER")
+        fi
+        node "$ACTION_PATH/scripts/pr-comment.mjs" "${NODE_ARGS[@]}"

@@ -1,8 +1,21 @@
 {
   "name": "@vaultcompass/conductor",
-  "version": "0.4.0",
+  "version": "0.4.5",
   "type": "module",
   "description": "Umbrella installer and combined report over the independently installable guardrail gates.",
+  "keywords": [
+    "security",
+    "guardrails",
+    "sarif",
+    "code-scanning",
+    "github-actions",
+    "pre-commit",
+    "supply-chain",
+    "secrets-detection",
+    "cli"
+  ],
+  "homepage": "https://github.com/marketplace/actions/conductor-guardrail-gates",
+  "bugs": "https://github.com/vaultcompasshq/conductor/issues",
   "license": "MIT",
   "repository": {
     "type": "git",
